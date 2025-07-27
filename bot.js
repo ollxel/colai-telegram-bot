@@ -2,16 +2,18 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
+const express = require('express'); // <-- НОВОЕ: Добавляем Express
 
 // --- КОНФИГУРАЦИЯ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const PORT = process.env.PORT || 3000; // <-- НОВОЕ: Порт для веб-сервера
 
 // Список доступных моделей на Groq
 const AVAILABLE_MODELS = ['llama3-8b-8192', 'llama3-70b-8192', 'mixtral-8x7b-32768', 'gemma-7b-it'];
 
-// --- КЛАССЫ ПРОЕКТА ---
+// --- КЛАССЫ ПРОЕКТА (без изменений) ---
 
 class PromptGenerator {
     createIterationPrompt(topicDescription, iteration, acceptedSummaries) {
@@ -49,7 +51,6 @@ class NetworkManager {
         if (!network) throw new Error(`Network ${networkId} not found.`);
 
         let systemPrompt = settings.system_prompts[networkId];
-        // Добавляем инструкцию по языку в каждый запрос
         systemPrompt += `\n\nIMPORTANT INSTRUCTION: You MUST respond ONLY in ${settings.discussion_language}. Do not use any other language.`;
 
         try {
@@ -94,7 +95,7 @@ class NeuralCollaborativeFramework {
             temperature: 0.7,
             max_tokens: 1024,
             discussion_language: 'Russian',
-            enabled_networks: ['network1', 'network2'], // По умолчанию включены только две
+            enabled_networks: ['network1', 'network2'],
             system_prompts: {
                 network1: 'You are an Analytical Network. Focus on logic, data, and structured reasoning.',
                 network2: 'You are a Creative Network. Focus on novel ideas, alternatives, and innovative perspectives.',
@@ -156,7 +157,6 @@ class NeuralCollaborativeFramework {
                 this.sendMessage(`🤔 _${networkName} думает..._`);
                 const response = await this.networkManager.generateResponse(networkId, currentDiscussion, this.settings);
                 this.sendMessage(`*${networkName}:*\n${response}`);
-                // ВАЖНО: Добавляем ответ в контекст для следующей нейронки
                 currentDiscussion += `\n\n**${networkName}'s input:**\n${response}`;
             }
 
@@ -164,7 +164,6 @@ class NeuralCollaborativeFramework {
             const summary = await this.networkManager.generateResponse('summarizer', currentDiscussion, this.settings);
             this.sendMessage(`*Сводка итерации ${this.iterations}:*\n${summary}`);
             
-            // --- НОВОЕ: ГОЛОСОВАНИЕ ---
             this.sendMessage(`🗳️ _Проводим голосование по сводке..._`);
             let votesFor = 0;
             let votesAgainst = 0;
@@ -250,6 +249,7 @@ bot.onText(/\/start/, (msg) => {
     bot.sendMessage(msg.chat.id, welcomeText, { parse_mode: 'Markdown' });
 });
 
+// ... (весь остальной код с командами /discuss, /reset, /settings и т.д. остается без изменений) ...
 bot.onText(/\/discuss (.+)/, (msg, match) => {
     getOrCreateSession(msg.chat.id).startCollaboration(match[1]);
 });
@@ -258,8 +258,6 @@ bot.onText(/\/reset/, (msg) => {
     delete chatSessions[msg.chat.id];
     bot.sendMessage(msg.chat.id, "Обсуждение и настройки сброшены к значениям по умолчанию.");
 });
-
-// --- НОВЫЕ И УЛУЧШЕННЫЕ КОМАНДЫ ДЛЯ НАСТРОЕК ---
 
 bot.onText(/\/settings/, (msg) => {
     const session = getOrCreateSession(msg.chat.id);
@@ -339,7 +337,7 @@ bot.onText(/\/set_temp (.+)/, (msg, match) => {
 
 bot.onText(/\/set_tokens (.+)/, (msg, match) => {
     const tokens = parseInt(match[1], 10);
-    if (!isNaN(tokens) && tokens > 0 && tokens <= 32768) { // Увеличил лимит для Mixtral
+    if (!isNaN(tokens) && tokens > 0 && tokens <= 32768) {
         getOrCreateSession(msg.chat.id).settings.max_tokens = tokens;
         bot.sendMessage(msg.chat.id, `✅ Лимит токенов установлен на: \`${tokens}\``, { parse_mode: 'Markdown' });
     } else {
@@ -364,3 +362,15 @@ bot.onText(/\/set_prompt (\w+) (.+)/s, (msg, match) => {
 });
 
 bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.message}`));
+
+
+// --- НОВОЕ: ВЕБ-СЕРВЕР ДЛЯ RENDER.COM ---
+const app = express();
+
+app.get('/', (req, res) => {
+    res.send('Бот жив и здоров!');
+});
+
+app.listen(PORT, () => {
+    console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`);
+});
