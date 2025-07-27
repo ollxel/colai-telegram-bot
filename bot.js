@@ -21,6 +21,15 @@ const PORT = process.env.PORT || 3000;
 
 const AVAILABLE_MODELS = ['llama3-8b-8192', 'llama3-70b-8192', 'mixtral-8x7b-32768', 'gemma-7b-it'];
 
+// --- НОВОЕ: Ключевые слова для голосования на разных языках ---
+const VOTE_KEYWORDS = {
+    'English': { accept: 'accept', reject: 'reject' },
+    'Russian': { accept: 'принимаю', reject: 'отклоняю' },
+    'German': { accept: 'akzeptieren', reject: 'ablehnen' },
+    'French': { accept: 'accepter', reject: 'rejeter' },
+    'Ukrainian': { accept: 'приймаю', reject: 'відхиляю' }
+};
+
 // --- КЛАССЫ ПРОЕКТА ---
 
 class NetworkManager {
@@ -46,7 +55,19 @@ class NetworkManager {
         systemPrompt += `\n\nIMPORTANT INSTRUCTION: You MUST respond ONLY in ${settings.discussion_language}. Do not use any other language.`;
         
         const temp = settings.custom_networks[networkId]?.temperature || settings.temperature;
-        const tokens = settings.custom_networks[networkId]?.max_tokens || settings.max_tokens;
+        
+        const modelContextLimit = 8192;
+        const promptTokens = Math.ceil(prompt.length / 3.5); 
+        const availableTokensForResponse = modelContextLimit - promptTokens - 200; 
+
+        if (availableTokensForResponse <= 0) {
+            throw new Error(`Контекст обсуждения стал слишком длинным для модели.`);
+        }
+
+        const finalMaxTokens = Math.min(
+            settings.custom_networks[networkId]?.max_tokens || settings.max_tokens,
+            availableTokensForResponse
+        );
 
         const maxRetries = 3;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -58,7 +79,7 @@ class NetworkManager {
                         model: settings.model,
                         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: prompt }],
                         temperature: temp,
-                        max_tokens: tokens,
+                        max_tokens: finalMaxTokens,
                     },
                     { headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` } }
                 );
@@ -116,12 +137,18 @@ class NeuralCollaborativeFramework {
             discussion_language: 'Russian',
             iteration_count: 2,
             enabled_networks: ['network1', 'network2'],
-            custom_networks: {}, // { "custom1": { name: "...", ... } }
-            staged_files: [], // { file_id, file_name, mime_type }
+            custom_networks: {},
+            staged_files: [],
             system_prompts: {
-                network1: 'You are an Analytical Network...',
-                network2: 'You are a Creative Network...',
-                // ... (остальные стандартные промпты)
+                network1: 'You are an Analytical Network. Focus on logic, data, and structured reasoning.',
+                network2: 'You are a Creative Network. Focus on novel ideas, alternatives, and innovative perspectives.',
+                network3: 'You are an Implementation Network. Focus on practical application and technical feasibility.',
+                network4: 'You are a Data Science Network. Focus on statistics, patterns, and empirical evidence.',
+                network5: 'You are an Ethical Network. Focus on moral implications and societal impact.',
+                network6: 'You are a User Experience Network. Focus on user-centered design and usability.',
+                network7: 'You are a Systems Thinking Network. Focus on holistic views and interconnections.',
+                network8: 'You are a Devil\'s Advocate Network. Your role is to challenge assumptions and stress-test ideas.',
+                summarizer: 'You are a Synthesizer Network. Your role is to read a discussion and create a concise, neutral summary of the key points.'
             }
         };
     }
@@ -133,21 +160,21 @@ class NeuralCollaborativeFramework {
     }
 
     async startCollaboration(topic) {
-        if (this.isWorking) return this.sendMessage("Обсуждение уже идет. Используйте /reset.");
+        if (this.isWorking) return this.sendMessage("Обсуждение уже идет. Используйте /stop или /reset.");
         if (this.settings.enabled_networks.length < 1) return this.sendMessage("❗️*Ошибка:* Включите хотя бы одну нейросеть.");
 
         this.resetProject();
         this.isWorking = true;
         this.projectDescription = topic;
 
-        this.sendMessage(`*Начинаю коллаборацию на тему:* "${topic}"`);
+        this.sendMessage(`*Начинаю коллаборацию на тему:* "${topic}"\n\n_Чтобы остановить, используйте команду /stop_`);
 
         try {
             let fileContext = await this.processStagedFiles();
-            this.settings.staged_files = []; // Очищаем файлы после обработки
+            this.settings.staged_files = [];
 
             await this.runDiscussionLoop(fileContext);
-            await this.finalizeDevelopment();
+            if (this.isWorking) await this.finalizeDevelopment(); // Финализируем, только если не было остановки
         } catch (error) {
             console.error(error);
             this.sendMessage(`❗️*Произошла ошибка:* ${error.message}`);
@@ -172,14 +199,14 @@ class NeuralCollaborativeFramework {
                 } else if (file.mime_type === 'application/pdf') {
                     const data = await pdf(filePath);
                     context += `[Document Content]:\n${data.text.substring(0, 4000)}...\n`;
-                } else if (file.mime_type.includes('wordprocessingml')) { // DOCX
+                } else if (file.mime_type.includes('wordprocessingml')) {
                     const { value } = await mammoth.extractRawText({ path: filePath });
                     context += `[Document Content]:\n${value.substring(0, 4000)}...\n`;
-                } else { // Plain text
+                } else {
                     const textContent = fs.readFileSync(filePath, 'utf-8');
                     context += `[File Content]:\n${textContent.substring(0, 4000)}...\n`;
                 }
-                fs.unlinkSync(filePath); // Удаляем временный файл
+                fs.unlinkSync(filePath);
             } catch (e) {
                 console.error(`Ошибка обработки файла ${file.file_name}:`, e);
                 context += `[Could not process file: ${file.file_name}]\n`;
@@ -190,47 +217,58 @@ class NeuralCollaborativeFramework {
     }
 
     async runDiscussionLoop(fileContext) {
-        let fullConversationHistory = fileContext;
-
         while (this.iterations < this.settings.iteration_count) {
+            if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
             this.iterations++;
             this.sendMessage(`\n\n--- 💬 *Итерация ${this.iterations} из ${this.settings.iteration_count}* ---\n`);
             
             let iterationHistory = "";
 
             for (const networkId of this.settings.enabled_networks) {
+                if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
                 const networkName = this.networkManager.networks[networkId]?.name || this.settings.custom_networks[networkId]?.name;
                 
-                let prompt = `Main Topic: "${this.projectDescription}"\n\n${fullConversationHistory}\n\n---\nAs the ${networkName}, provide your input now.`;
+                let prompt = `Main Topic: "${this.projectDescription}"\n\n`;
+                if (fileContext) prompt += fileContext;
+                if (this.acceptedSummaries.length > 0) {
+                    prompt += `Here are the accepted summaries from previous rounds:\n${this.acceptedSummaries.map((s, i) => `Summary ${i+1}: ${s}`).join('\n\n')}\n\n`;
+                }
+                prompt += `Here is the conversation from the current round so far:\n${iterationHistory}\n\n---\nAs the ${networkName}, provide your input now.`;
 
                 this.sendMessage(`🤔 _${networkName} думает..._`);
                 const response = await this.networkManager.generateResponse(networkId, prompt, this.settings, this.sendMessage);
+                if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
                 this.sendMessage(`*${networkName}:*\n${response}`);
                 
                 iterationHistory += `\n\n**${networkName} said:**\n${response}`;
             }
 
-            fullConversationHistory += iterationHistory;
-
+            if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
             this.sendMessage(`📝 _Синтезатор анализирует..._`);
             const summaryPrompt = `Please create a concise summary of the key points from the following discussion:\n\n${iterationHistory}`;
             const summary = await this.networkManager.generateResponse('summarizer', summaryPrompt, this.settings, this.sendMessage);
+            if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
             this.sendMessage(`*Сводка итерации ${this.iterations}:*\n${summary}`);
             
             this.sendMessage(`🗳️ _Проводим голосование по сводке..._`);
             let votesFor = 0;
             let votesAgainst = 0;
 
+            const keywords = VOTE_KEYWORDS[this.settings.discussion_language] || VOTE_KEYWORDS['English'];
+            const acceptRegex = new RegExp(`^${keywords.accept}`, 'i');
+
             for (const networkId of this.settings.enabled_networks) {
+                if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
                 const networkName = this.networkManager.networks[networkId]?.name || this.settings.custom_networks[networkId]?.name;
-                const votePrompt = `Here is the discussion summary to vote on:\n"${summary}"\n\nAs the ${networkName}, do you accept this summary? Respond with only "Accept" or "Reject" and a brief reason.`;
+                const votePrompt = `Here is the discussion summary to vote on:\n"${summary}"\n\nAs the ${networkName}, do you accept this summary? Respond with ONLY the word "${keywords.accept}" or "${keywords.reject}" in ${this.settings.discussion_language}, followed by a brief reason.`;
                 const voteResponse = await this.networkManager.generateResponse(networkId, votePrompt, this.settings, this.sendMessage);
+                if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
                 this.sendMessage(`*${networkName} голосует:*\n${voteResponse}`);
                 
-                if (voteResponse.toLowerCase().includes('accept')) votesFor++; else votesAgainst++;
+                if (acceptRegex.test(voteResponse)) votesFor++; else votesAgainst++;
             }
 
-            if (votesAgainst > votesFor) {
+            if (votesAgainst >= votesFor) {
                 this.sendMessage(`*Голосование провалено* (${votesFor} за, ${votesAgainst} против). Сводка отклонена.`);
             } else {
                 this.sendMessage(`*Голосование успешно!* (${votesFor} за, ${votesAgainst} против). Сводка принята.`);
@@ -264,6 +302,7 @@ const activeRequests = {};
 
 bot.setMyCommands([
     { command: '/start', description: '🚀 Помощь и информация о боте' },
+    { command: '/stop', description: '🛑 Немедленно остановить генерацию' },
     { command: '/settings', description: '⚙️ Показать/изменить настройки' },
     { command: '/reset', description: '🗑 Сбросить обсуждение и настройки' },
 ]);
@@ -296,7 +335,7 @@ bot.onText(/\/start/, (msg) => {
 2. Нажмите кнопку "🚀 Новое Обсуждение" и напишите тему.
 
 *Настройки:*
-- Нажмите "⚙️ Настройки", чтобы выбрать участников, AI-модель, язык и даже создать своих собственных нейросетей!
+- Нажмите "⚙️ Настройки", чтобы выбрать участников, AI-модели, язык и даже создать своих собственных нейросетей!
     `;
     bot.sendMessage(msg.chat.id, welcomeText, { ...MAIN_KEYBOARD, parse_mode: 'Markdown' });
 });
@@ -312,16 +351,16 @@ bot.on('message', (msg) => {
         return;
     }
     
-    // Обработка прикрепленных файлов
     if (msg.photo || msg.document) {
         const session = getOrCreateSession(chatId);
         const file = msg.document || msg.photo[msg.photo.length - 1];
+        const fileName = msg.document?.file_name || `photo_${file.file_id.substring(0, 6)}.jpg`;
         session.settings.staged_files.push({
             file_id: file.file_id,
-            file_name: msg.document ? msg.document.file_name : 'photo.jpg',
-            mime_type: msg.document ? msg.document.mime_type : 'image/jpeg'
+            file_name: fileName,
+            mime_type: msg.document?.mime_type || 'image/jpeg'
         });
-        bot.sendMessage(chatId, `✅ Файл "${file.file_name || 'photo.jpg'}" добавлен и будет использован в следующем обсуждении.`);
+        bot.sendMessage(chatId, `✅ Файл "${fileName}" добавлен и будет использован в следующем обсуждении.`);
         return;
     }
 
@@ -341,9 +380,17 @@ bot.onText(/\/reset/, (msg) => {
     bot.sendMessage(msg.chat.id, "Обсуждение и настройки сброшены.", MAIN_KEYBOARD);
 });
 
-// ... (остальной код с меню и колбэками будет ниже)
-// ... (вставьте сюда весь блок с `sendSettingsMessage` и `bot.on('callback_query', ...)` из предыдущего ответа)
-// ... (и `handleActiveRequest` тоже)
+// --- НОВОЕ: Команда для остановки генерации ---
+bot.onText(/\/stop/, (msg) => {
+    const session = getOrCreateSession(msg.chat.id);
+    if (session.isWorking) {
+        session.isWorking = false; // Устанавливаем флаг остановки
+        bot.sendMessage(msg.chat.id, "🛑 Получен сигнал остановки. Завершаю текущую операцию...");
+    } else {
+        bot.sendMessage(msg.chat.id, "Сейчас нет активного обсуждения, чтобы его останавливать.");
+    }
+});
+
 
 function sendSettingsMessage(chatId) {
     const session = getOrCreateSession(chatId);
@@ -397,7 +444,7 @@ bot.on('callback_query', (query) => {
             session.settings.discussion_language = value;
             updateLangMenu(chatId, messageId, session);
             break;
-        case 'setiterations':
+        case 'setiterations': // --- ИСПРАВЛЕНО: Добавлен обработчик ---
             session.settings.iteration_count = parseInt(value, 10);
             updateAdvancedMenu(chatId, messageId, session);
             break;
@@ -413,7 +460,7 @@ bot.on('callback_query', (query) => {
             bot.deleteMessage(chatId, messageId);
             break;
         case 'settokens':
-            bot.sendMessage(chatId, `Пришлите следующим сообщением новый лимит токенов (число от 1 до 32768):`);
+            bot.sendMessage(chatId, `Пришлите следующим сообщением новый лимит токенов (число от 1 до 8192):`);
             activeRequests[chatId] = { type: 'max_tokens' };
             bot.deleteMessage(chatId, messageId);
             break;
@@ -489,8 +536,14 @@ function updateLangMenu(chatId, messageId, session) {
 function updateAdvancedMenu(chatId, messageId, session) {
     const s = session.settings;
     const text = `*Продвинутые настройки:*\n\n- *Итерации:* \`${s.iteration_count}\`\n- *Температура:* \`${s.temperature}\`\n- *Макс. токенов:* \`${s.max_tokens}\``;
+    
+    const iterationButtons = [1, 2, 3, 4, 5].map(i => ({
+        text: `${s.iteration_count === i ? '🔘' : '⚪️'} ${i}`,
+        callback_data: `setiterations_${i}`
+    }));
+
     const keyboard = [
-        [{ text: `🔄 Итерации: ${s.iteration_count}`, callback_data: 'menu_iterations' }], // Эта кнопка пока не реализована, можно добавить
+        iterationButtons,
         [{ text: '🌡️ Температура', callback_data: 'settemp' }, { text: '📄 Макс. токенов', callback_data: 'settokens' }],
         [{ text: '🧠 Системные промпты', callback_data: 'menu_prompts' }],
         [{ text: '⬅️ Назад', callback_data: 'back_settings' }]
@@ -532,6 +585,11 @@ function handleActiveRequest(chatId, msg) {
     const session = getOrCreateSession(chatId);
     const text = msg.text;
 
+    if (!text) {
+        bot.sendMessage(chatId, "Пожалуйста, пришлите ответ в виде текста.");
+        return;
+    }
+
     switch (request.type) {
         case 'topic':
             delete activeRequests[chatId];
@@ -550,11 +608,11 @@ function handleActiveRequest(chatId, msg) {
             break;
         case 'max_tokens':
             const tokens = parseInt(text, 10);
-            if (!isNaN(tokens) && tokens > 0 && tokens <= 32768) {
+            if (!isNaN(tokens) && tokens > 0 && tokens <= 8192) {
                 session.settings.max_tokens = tokens;
                 bot.sendMessage(chatId, `✅ Лимит токенов установлен на: \`${tokens}\``, { parse_mode: 'Markdown' });
             } else {
-                bot.sendMessage(chatId, '❌ Ошибка. Введите целое число от 1 до 32768.');
+                bot.sendMessage(chatId, '❌ Ошибка. Введите целое число от 1 до 8192.');
             }
             delete activeRequests[chatId];
             sendSettingsMessage(chatId);
@@ -580,7 +638,7 @@ function handleActiveRequest(chatId, msg) {
             const customTemp = parseFloat(text);
             if (isNaN(customTemp) || customTemp < 0.0 || customTemp > 2.0) {
                 bot.sendMessage(chatId, '❌ Ошибка. Введите число от 0.0 до 2.0.');
-                return; // Оставляем запрос активным для повторной попытки
+                return;
             }
             activeRequests[chatId].temp = customTemp;
             bot.sendMessage(chatId, `Понял. И последнее: введите лимит токенов (длину ответа), например, 1024:`);
@@ -609,6 +667,7 @@ function handleActiveRequest(chatId, msg) {
 
 bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.message}`));
 
+// --- ВЕБ-СЕРВЕР ДЛЯ RENDER.COM ---
 const app = express();
 app.get('/', (req, res) => res.send('Бот жив и здоров!'));
-app.listen(PORT, () => console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`));
+a
