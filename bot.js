@@ -2,32 +2,25 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const express = require('express'); // <-- НОВОЕ: Добавляем Express
+const express = require('express');
 
 // --- КОНФИГУРАЦИЯ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const PORT = process.env.PORT || 3000; // <-- НОВОЕ: Порт для веб-сервера
+const PORT = process.env.PORT || 3000;
 
-// Список доступных моделей на Groq
 const AVAILABLE_MODELS = ['llama3-8b-8192', 'llama3-70b-8192', 'mixtral-8x7b-32768', 'gemma-7b-it'];
 
-// --- КЛАССЫ ПРОЕКТА (без изменений) ---
+// --- КЛАССЫ ПРОЕКТА ---
 
 class PromptGenerator {
-    createIterationPrompt(topicDescription, iteration, acceptedSummaries) {
-        let prompt = `The main topic of discussion is: "${topicDescription}"\n\n`;
-        if (iteration === 1) {
-            prompt += "This is the first round. Please provide your initial thoughts on the topic from your unique perspective.";
-        } else {
-            prompt += `This is round ${iteration}. Here are the accepted summaries from previous rounds:\n\n`;
-            acceptedSummaries.forEach((summary, index) => {
-                prompt += `--- Accepted Summary ${index + 1} ---\n${summary}\n\n`;
-            });
-            prompt += "Based on these summaries, please provide your further thoughts or build upon the existing ideas.";
-        }
-        return prompt;
+    createInitialPrompt(topicDescription) {
+        return `The main topic of discussion is: "${topicDescription}"\n\nThis is the first round. As the first speaker, please provide your initial thoughts on the topic from your unique perspective.`;
+    }
+
+    createContinuationPrompt(topicDescription, fullConversationHistory) {
+        return `The main topic of discussion is: "${topicDescription}"\n\nHere is the full conversation history so far:\n\n${fullConversationHistory}\n\n---\n\nBased on the conversation above, please provide your response from your unique perspective. Address the points made by others if relevant.`;
     }
 }
 
@@ -54,6 +47,9 @@ class NetworkManager {
         systemPrompt += `\n\nIMPORTANT INSTRUCTION: You MUST respond ONLY in ${settings.discussion_language}. Do not use any other language.`;
 
         try {
+            // Добавляем задержку для предотвращения ошибки 429 Rate Limit
+            await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 секунды задержки
+
             const response = await axios.post(
                 GROQ_API_URL,
                 {
@@ -72,6 +68,9 @@ class NetworkManager {
             console.error(`\n--- ОШИБКА API GROQ для "${network.name}" ---`);
             if (error.response) {
                 console.error(`Статус: ${error.response.status}, Данные: ${JSON.stringify(error.response.data)}`);
+                if (error.response.status === 429) {
+                    throw new Error(`Слишком много запросов к "${network.name}". Пожалуйста, подождите минуту и попробуйте снова.`);
+                }
             } else {
                 console.error(`Сообщение: ${error.message}`);
             }
@@ -93,7 +92,7 @@ class NeuralCollaborativeFramework {
         this.settings = {
             model: 'llama3-8b-8192',
             temperature: 0.7,
-            max_tokens: 1024,
+            max_tokens: 768, // Уменьшаем по умолчанию, чтобы не превышать лимиты
             discussion_language: 'Russian',
             enabled_networks: ['network1', 'network2'],
             system_prompts: {
@@ -123,7 +122,7 @@ class NeuralCollaborativeFramework {
             return;
         }
         if (this.settings.enabled_networks.length < 2) {
-            this.sendMessage("❗️*Ошибка:* Для начала обсуждения нужно включить как минимум две нейросети. Используйте команду `/toggle`.");
+            this.sendMessage("❗️*Ошибка:* Для начала обсуждения нужно включить как минимум две нейросети. Используйте меню настроек.");
             return;
         }
 
@@ -145,33 +144,40 @@ class NeuralCollaborativeFramework {
     }
 
     async runDiscussionLoop() {
+        let fullConversationHistory = "";
+
         while (this.iterations < this.maxIterations) {
             this.iterations++;
             this.sendMessage(`\n\n--- 💬 *Итерация ${this.iterations} из ${this.maxIterations}* ---\n`);
             
-            const prompt = this.promptGenerator.createIterationPrompt(this.projectDescription, this.iterations, this.acceptedSummaries);
-            let currentDiscussion = prompt;
-
             for (const networkId of this.settings.enabled_networks) {
                 const networkName = this.networkManager.networks[networkId].name;
+                
+                // Создаем промпт на основе всей предыдущей истории
+                const prompt = fullConversationHistory === ""
+                    ? this.promptGenerator.createInitialPrompt(this.projectDescription)
+                    : this.promptGenerator.createContinuationPrompt(this.projectDescription, fullConversationHistory);
+
                 this.sendMessage(`🤔 _${networkName} думает..._`);
-                const response = await this.networkManager.generateResponse(networkId, currentDiscussion, this.settings);
+                const response = await this.networkManager.generateResponse(networkId, prompt, this.settings);
                 this.sendMessage(`*${networkName}:*\n${response}`);
-                currentDiscussion += `\n\n**${networkName}'s input:**\n${response}`;
+                
+                // Добавляем ответ в общую историю диалога
+                fullConversationHistory += `\n\n**${networkName} said:**\n${response}`;
             }
 
             this.sendMessage(`📝 _Синтезатор анализирует..._`);
-            const summary = await this.networkManager.generateResponse('summarizer', currentDiscussion, this.settings);
+            const summaryPrompt = `Please create a concise summary of the key points from the following discussion:\n\n${fullConversationHistory}`;
+            const summary = await this.networkManager.generateResponse('summarizer', summaryPrompt, this.settings);
             this.sendMessage(`*Сводка итерации ${this.iterations}:*\n${summary}`);
             
             this.sendMessage(`🗳️ _Проводим голосование по сводке..._`);
             let votesFor = 0;
             let votesAgainst = 0;
-            let rejectionReasons = [];
 
             for (const networkId of this.settings.enabled_networks) {
                 const networkName = this.networkManager.networks[networkId].name;
-                const votePrompt = `Here is the discussion context:\n${currentDiscussion}\n\nHere is the summary to vote on:\n"${summary}"\n\nAs the ${networkName}, do you accept this summary? Respond with only "Accept" or "Reject" followed by a brief reason.`;
+                const votePrompt = `Here is the discussion summary to vote on:\n"${summary}"\n\nAs the ${networkName}, do you accept this summary? Respond with only "Accept" or "Reject" and a brief reason.`;
                 const voteResponse = await this.networkManager.generateResponse(networkId, votePrompt, this.settings);
                 this.sendMessage(`*${networkName} голосует:*\n${voteResponse}`);
                 
@@ -179,12 +185,11 @@ class NeuralCollaborativeFramework {
                     votesFor++;
                 } else {
                     votesAgainst++;
-                    rejectionReasons.push(`- ${networkName}: ${voteResponse.replace(/reject/i, '').trim()}`);
                 }
             }
 
             if (votesAgainst > votesFor) {
-                this.sendMessage(`*Голосование провалено* (${votesFor} за, ${votesAgainst} против). Сводка отклонена. Причины:\n${rejectionReasons.join('\n')}`);
+                this.sendMessage(`*Голосование провалено* (${votesFor} за, ${votesAgainst} против). Сводка отклонена.`);
             } else {
                 this.sendMessage(`*Голосование успешно!* (${votesFor} за, ${votesAgainst} против). Сводка принята.`);
                 this.acceptedSummaries.push(summary);
@@ -212,9 +217,8 @@ const chatSessions = {};
 
 bot.setMyCommands([
     { command: '/start', description: '🚀 Помощь и информация о боте' },
-    { command: '/discuss', description: '💬 Начать новое обсуждение (напр. /discuss тема)' },
+    { command: '/discuss', description: '💬 Начать новое обсуждение' },
     { command: '/settings', description: '⚙️ Показать/изменить настройки' },
-    { command: '/toggle', description: '🕹 Включить/выключить нейросеть (напр. /toggle ethical)' },
     { command: '/reset', description: '🗑 Сбросить обсуждение и настройки' },
 ]);
 
@@ -230,6 +234,17 @@ function getOrCreateSession(chatId) {
 
 console.log('Бот успешно запущен и готов к работе!');
 
+// --- ОБРАБОТЧИКИ СООБЩЕНИЙ И КНОПОК ---
+
+const MAIN_KEYBOARD = {
+    reply_markup: {
+        keyboard: [
+            [{ text: '🚀 Новое Обсуждение' }, { text: '⚙️ Настройки' }],
+        ],
+        resize_keyboard: true,
+    },
+};
+
 bot.onText(/\/start/, (msg) => {
     const welcomeText = `
 *Добро пожаловать!*
@@ -237,140 +252,175 @@ bot.onText(/\/start/, (msg) => {
 Я бот, в котором AI-личности могут совместно обсуждать заданную вами тему.
 
 *Как начать:*
-1. Нажмите **Меню** (слева от поля ввода) и выберите \`/discuss\`.
-2. Напишите вашу тему после команды и отправьте.
-   *Пример:* \`/discuss Плюсы и минусы удаленной работы\`
+Нажмите кнопку "🚀 Новое Обсуждение" внизу и следуйте инструкциям.
 
-*Основные команды:*
-- \`/settings\` - Посмотреть и настроить модель, температуру, язык и промпты.
-- \`/toggle <имя>\` - Включить или выключить нейросеть для следующего обсуждения.
-- \`/reset\` - Сбросить все к настройкам по умолчанию.
+*Основные возможности:*
+- *🚀 Новое Обсуждение:* Запустить диалог нейросетей.
+- *⚙️ Настройки:* Управлять участниками диалога, выбирать AI-модели и язык общения.
+- \`/reset\`: Сбросить все настройки к значениям по умолчанию.
     `;
-    bot.sendMessage(msg.chat.id, welcomeText, { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, welcomeText, { ...MAIN_KEYBOARD, parse_mode: 'Markdown' });
 });
 
-// ... (весь остальной код с командами /discuss, /reset, /settings и т.д. остается без изменений) ...
-bot.onText(/\/discuss (.+)/, (msg, match) => {
-    getOrCreateSession(msg.chat.id).startCollaboration(match[1]);
+bot.on('message', (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text;
+
+    // Игнорируем команды, чтобы они обрабатывались своими onText хендлерами
+    if (text.startsWith('/')) return;
+
+    switch (text) {
+        case '🚀 Новое Обсуждение':
+            bot.sendMessage(chatId, 'Какую тему вы хотите обсудить? Просто напишите ее в чат.').then(() => {
+                bot.once('message', (topicMsg) => {
+                    if (!topicMsg.text.startsWith('/')) { // Убедимся, что это не команда
+                        getOrCreateSession(chatId).startCollaboration(topicMsg.text);
+                    }
+                });
+            });
+            break;
+        case '⚙️ Настройки':
+            sendSettingsMessage(chatId);
+            break;
+    }
 });
 
 bot.onText(/\/reset/, (msg) => {
     delete chatSessions[msg.chat.id];
-    bot.sendMessage(msg.chat.id, "Обсуждение и настройки сброшены к значениям по умолчанию.");
+    bot.sendMessage(msg.chat.id, "Обсуждение и настройки сброшены к значениям по умолчанию.", MAIN_KEYBOARD);
 });
 
-bot.onText(/\/settings/, (msg) => {
-    const session = getOrCreateSession(msg.chat.id);
+function sendSettingsMessage(chatId) {
+    const session = getOrCreateSession(chatId);
     const s = session.settings;
     const nm = session.networkManager;
 
-    const enabledNetworks = s.enabled_networks.map(id => nm.networks[id].name).join(', ');
-    
+    const enabledNetworksText = s.enabled_networks.length > 0
+        ? s.enabled_networks.map(id => nm.networks[id].name).join(', ')
+        : 'Никто не включен';
+
     const settingsText = `
 *Текущие настройки для этого чата:*
 
-*Включенные сети:* ${enabledNetworks}
+*Участники:* ${enabledNetworksText}
 *Язык обсуждения:* \`${s.discussion_language}\`
-*Модель:* \`${s.model}\`
-*Температура:* \`${s.temperature}\`
-*Макс. токенов:* \`${s.max_tokens}\`
+*AI-Модель:* \`${s.model}\`
 
-*Как изменить:*
-- \`/set_lang <язык>\` (напр. \`English\`, \`Russian\`, \`German\`)
-- \`/set_model <имя>\`
-- \`/set_temp <0.0-2.0>\`
-- \`/set_tokens <число>\`
-- \`/set_prompt <имя_сети> <текст>\`
-  _Имена сетей: ${Object.values(nm.networks).map(n => n.short_name).join(', ')}_
+Нажмите на кнопки ниже, чтобы изменить настройки.
     `;
-    bot.sendMessage(msg.chat.id, settingsText, { parse_mode: 'Markdown', disable_web_page_preview: true });
+
+    const inlineKeyboard = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '🕹 Участники', callback_data: 'menu_toggle' }],
+                [{ text: '🤖 AI-Модель', callback_data: 'menu_model' }, { text: '🌍 Язык', callback_data: 'menu_lang' }],
+                [{ text: '❌ Закрыть', callback_data: 'close_settings' }]
+            ]
+        }
+    };
+
+    bot.sendMessage(chatId, settingsText, { ...inlineKeyboard, parse_mode: 'Markdown' });
+}
+
+bot.on('callback_query', (query) => {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const data = query.data;
+    const session = getOrCreateSession(chatId);
+
+    bot.answerCallbackQuery(query.id); // Убираем "часики" с кнопки
+
+    if (data.startsWith('toggle_')) {
+        const networkId = data.split('_')[1];
+        const enabled = session.settings.enabled_networks;
+        if (enabled.includes(networkId)) {
+            session.settings.enabled_networks = enabled.filter(id => id !== networkId);
+        } else {
+            enabled.push(networkId);
+        }
+        updateToggleMenu(chatId, messageId, session);
+    } else if (data.startsWith('set_model_')) {
+        session.settings.model = data.replace('set_model_', '');
+        sendSettingsMessage(chatId); // Возвращаемся в главное меню настроек
+        bot.deleteMessage(chatId, messageId); // Удаляем старое сообщение с выбором
+    } else if (data.startsWith('set_lang_')) {
+        session.settings.discussion_language = data.replace('set_lang_', '');
+        sendSettingsMessage(chatId);
+        bot.deleteMessage(chatId, messageId);
+    } else if (data === 'menu_toggle') {
+        updateToggleMenu(chatId, messageId, session);
+    } else if (data === 'menu_model') {
+        updateModelMenu(chatId, messageId, session);
+    } else if (data === 'menu_lang') {
+        updateLangMenu(chatId, messageId, session);
+    } else if (data === 'back_to_settings') {
+        bot.deleteMessage(chatId, messageId);
+        sendSettingsMessage(chatId);
+    } else if (data === 'close_settings') {
+        bot.deleteMessage(chatId, messageId);
+    }
 });
 
-bot.onText(/\/toggle (.+)/, (msg, match) => {
-    const session = getOrCreateSession(msg.chat.id);
-    const networkShortName = match[1].trim().toLowerCase();
+function updateToggleMenu(chatId, messageId, session) {
+    const { enabled_networks } = session.settings;
+    const { networks } = session.networkManager;
     
-    const networkEntry = Object.entries(session.networkManager.networks).find(([id, net]) => net.short_name === networkShortName);
+    const buttons = Object.entries(networks).filter(([id]) => id !== 'summarizer').map(([id, net]) => {
+        const status = enabled_networks.includes(id) ? '✅' : '❌';
+        return { text: `${status} ${net.name}`, callback_data: `toggle_${id}` };
+    });
 
-    if (!networkEntry) {
-        bot.sendMessage(msg.chat.id, `❌ Неверное имя сети. Доступные для /toggle: ${Object.values(session.networkManager.networks).filter(n=>n.short_name !== 'synthesizer').map(n => n.short_name).join(', ')}`);
-        return;
+    const keyboard = [];
+    for (let i = 0; i < buttons.length; i += 2) {
+        keyboard.push(buttons.slice(i, i + 2));
     }
+    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_to_settings' }]);
+
+    bot.editMessageText('*Включите или выключите участников обсуждения:*', {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+}
+
+function updateModelMenu(chatId, messageId, session) {
+    const currentModel = session.settings.model;
+    const keyboard = AVAILABLE_MODELS.map(model => {
+        const prefix = model === currentModel ? '🔘' : '⚪️';
+        return [{ text: `${prefix} ${model}`, callback_data: `set_model_${model}` }];
+    });
+    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_to_settings' }]);
     
-    const [networkId, network] = networkEntry;
-    const enabled = session.settings.enabled_networks;
-    
-    if (enabled.includes(networkId)) {
-        session.settings.enabled_networks = enabled.filter(id => id !== networkId);
-        bot.sendMessage(msg.chat.id, `✅ *${network.name}* выключена для следующего обсуждения.`);
-    } else {
-        enabled.push(networkId);
-        bot.sendMessage(msg.chat.id, `✅ *${network.name}* включена для следующего обсуждения.`);
-    }
-});
+    bot.editMessageText('*Выберите AI-модель для обсуждения:*', {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+}
 
-bot.onText(/\/set_lang (.+)/, (msg, match) => {
-    const lang = match[1].trim();
-    getOrCreateSession(msg.chat.id).settings.discussion_language = lang;
-    bot.sendMessage(msg.chat.id, `✅ Язык обсуждения установлен на: \`${lang}\``, { parse_mode: 'Markdown' });
-});
+function updateLangMenu(chatId, messageId, session) {
+    const currentLang = session.settings.discussion_language;
+    const languages = ['Russian', 'English', 'German', 'French'];
+    const keyboard = languages.map(lang => {
+        const prefix = lang === currentLang ? '🔘' : '⚪️';
+        return [{ text: `${prefix} ${lang}`, callback_data: `set_lang_${lang}` }];
+    });
+    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_to_settings' }]);
 
-bot.onText(/\/set_model (.+)/, (msg, match) => {
-    const model = match[1].trim();
-    if (AVAILABLE_MODELS.includes(model)) {
-        getOrCreateSession(msg.chat.id).settings.model = model;
-        bot.sendMessage(msg.chat.id, `✅ Модель обновлена на: \`${model}\``, { parse_mode: 'Markdown' });
-    } else {
-        bot.sendMessage(msg.chat.id, `❌ Неверная модель. Доступные: \`${AVAILABLE_MODELS.join(', ')}\``, { parse_mode: 'Markdown' });
-    }
-});
+    bot.editMessageText('*Выберите язык, на котором будут общаться нейросети:*', {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    });
+}
 
-bot.onText(/\/set_temp (.+)/, (msg, match) => {
-    const temp = parseFloat(match[1]);
-    if (!isNaN(temp) && temp >= 0.0 && temp <= 2.0) {
-        getOrCreateSession(msg.chat.id).settings.temperature = temp;
-        bot.sendMessage(msg.chat.id, `✅ Температура установлена на: \`${temp}\``, { parse_mode: 'Markdown' });
-    } else {
-        bot.sendMessage(msg.chat.id, '❌ Ошибка. Укажите число от 0.0 до 2.0.');
-    }
-});
-
-bot.onText(/\/set_tokens (.+)/, (msg, match) => {
-    const tokens = parseInt(match[1], 10);
-    if (!isNaN(tokens) && tokens > 0 && tokens <= 32768) {
-        getOrCreateSession(msg.chat.id).settings.max_tokens = tokens;
-        bot.sendMessage(msg.chat.id, `✅ Лимит токенов установлен на: \`${tokens}\``, { parse_mode: 'Markdown' });
-    } else {
-        bot.sendMessage(msg.chat.id, '❌ Ошибка. Укажите целое число от 1 до 32768.');
-    }
-});
-
-bot.onText(/\/set_prompt (\w+) (.+)/s, (msg, match) => {
-    const networkShortName = match[1].toLowerCase();
-    const promptText = match[2];
-    const session = getOrCreateSession(msg.chat.id);
-    
-    const networkEntry = Object.entries(session.networkManager.networks).find(([id, net]) => net.short_name === networkShortName);
-
-    if (networkEntry) {
-        const [networkId, network] = networkEntry;
-        session.settings.system_prompts[networkId] = promptText;
-        bot.sendMessage(msg.chat.id, `✅ Системный промпт для "${network.name}" обновлен.`);
-    } else {
-        bot.sendMessage(msg.chat.id, `❌ Неверное имя сети. Используйте одно из: ${Object.values(session.networkManager.networks).map(n => n.short_name).join(', ')}`);
-    }
-});
 
 bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.message}`));
 
-
-// --- НОВОЕ: ВЕБ-СЕРВЕР ДЛЯ RENDER.COM ---
+// --- ВЕБ-СЕРВЕР ДЛЯ RENDER.COM ---
 const app = express();
-
-app.get('/', (req, res) => {
-    res.send('Бот жив и здоров!');
-});
-
-app.listen(PORT, () => {
-    console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`);
-});
+app.get('/', (req, res) => res.send('Бот жив и здоров!'));
+app.listen(PORT, () => console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`));
