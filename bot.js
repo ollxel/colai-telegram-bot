@@ -5,23 +5,23 @@ const axios = require('axios');
 
 // --- КОНФИГУРАЦИЯ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const HUGGINGFACE_TOKEN = process.env.HUGGINGFACE_TOKEN;
-const AI_MODEL_ID = 'gpt2'; // <-- ЗАМЕНИТЕ ЭТУ СТРОКУ
-const HUGGINGFACE_API_URL = `https://api-inference.huggingface.co/models/${AI_MODEL_ID}`;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const AI_MODEL_ID = 'llama3-8b-8192'; // Быстрая и умная модель на Groq
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
-// --- КЛАССЫ ИЗ ВАШЕГО ПРОЕКТА (АДАПТИРОВАННЫЕ И ИСПРАВЛЕННЫЕ) ---
+// --- КЛАССЫ ПРОЕКТА ---
 
 class PromptGenerator {
     createIterationPrompt(topicName, topicDescription, iteration, acceptedSummaries) {
-        let prompt = `Topic Name: ${topicName}\nTopic Description: ${topicDescription}\n\n`;
+        let prompt = `Topic: ${topicDescription}\n\n`;
         if (iteration === 1) {
-            prompt += "This is the first iteration. Begin exploring the core aspects of this topic with an open mind.";
+            prompt += "This is the first round of discussion. Please provide your initial thoughts on the topic.";
         } else {
-            prompt += `This is iteration ${iteration}. Here are the previously accepted summaries:\n\n`;
+            prompt += `This is round ${iteration}. Here are the summaries from previous rounds:\n\n`;
             acceptedSummaries.forEach((summary, index) => {
                 prompt += `Summary ${index + 1}: ${summary}\n\n`;
             });
-            prompt += "Focus on synthesizing the discussion into a coherent whole, addressing any remaining questions or loose ends.";
+            prompt += "Based on these summaries, please provide your further thoughts or build upon the existing ideas.";
         }
         return prompt;
     }
@@ -30,79 +30,47 @@ class PromptGenerator {
 class NetworkManager {
     constructor() {
         this.networks = {
-            network1: { name: 'Аналитик', persona: 'You are an analytical thinker. Focus on logical, structured, and evidence-based reasoning.' },
-            network2: { name: 'Креативщик', persona: 'You are a creative thinker. Focus on novel ideas, alternatives, and exploring possibilities.' },
-            network3: { name: 'Этик', persona: 'You specialize in ethical analysis. Focus on moral implications and societal impact.' },
-            summarizer: { name: 'Синтезатор', persona: 'You are specialized in synthesizing discussions and finding consensus.' }
+            network1: { name: 'Аналитик', persona: 'You are a pragmatic and analytical thinker. You focus on logic, data, and structured reasoning. Provide concise and clear arguments.' },
+            network2: { name: 'Креативщик', persona: 'You are a creative and imaginative thinker. You explore unconventional ideas, possibilities, and novel perspectives.' },
+            summarizer: { name: 'Синтезатор', persona: 'You are a master synthesizer. Your role is to read a discussion and create a concise, neutral summary of the key points.' }
         };
-        this.networkSettings = {
-            temperature: 0.7,
-            max_tokens: 512,
-            top_p: 0.9,
-        };
-    }
-
-    createSystemPrompt(basePersona) {
-        return basePersona;
     }
 
     async generateResponse(networkId, prompt) {
         const network = this.networks[networkId];
         if (!network) throw new Error(`Network ${networkId} not found.`);
 
-        const systemPrompt = this.createSystemPrompt(network.persona);
-        const fullPrompt = `<s>[INST] ${systemPrompt}\n\n${prompt} [/INST]`;
-
         try {
-            const response = await axios.post(HUGGINGFACE_API_URL, {
-                inputs: fullPrompt,
-                parameters: {
-                    max_new_tokens: this.networkSettings.max_tokens,
-                    temperature: this.networkSettings.temperature,
-                    top_p: this.networkSettings.top_p,
-                    return_full_text: false,
-                }
-            }, {
-                headers: { 'Authorization': `Bearer ${HUGGINGFACE_TOKEN}` }
-            });
-            return response.data[0].generated_text.trim();
+            const response = await axios.post(
+                GROQ_API_URL,
+                {
+                    model: AI_MODEL_ID,
+                    messages: [
+                        { role: "system", content: network.persona },
+                        { role: "user", content: prompt }
+                    ],
+                    temperature: 0.7,
+                    max_tokens: 1024,
+                },
+                { headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` } }
+            );
+            return response.data.choices[0].message.content.trim();
         } catch (error) {
-            // --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-            
-            // Безопасно получаем текст ошибки
-            const errorMessage = error.response?.data?.error;
-
-            // Сначала проверяем, является ли ошибка строкой, и только потом ищем в ней текст
-            if (typeof errorMessage === 'string' && errorMessage.includes("is currently loading")) {
-                console.log(`Model ${AI_MODEL_ID} is loading. Retrying in 25 seconds...`);
-                // Уведомляем пользователя о "холодном старте"
-                if (global.sendMessageCallback) {
-                    global.sendMessageCallback(`_(Модель для "${network.name}" просыпается, это может занять минуту...)_`);
-                }
-                await new Promise(resolve => setTimeout(resolve, 25000));
-                return this.generateResponse(networkId, prompt); // Повторная попытка
+            console.error(`\n--- ОШИБКА API GROQ для "${network.name}" ---`);
+            if (error.response) {
+                console.error(`Статус: ${error.response.status}`);
+                console.error(`Данные: ${JSON.stringify(error.response.data)}`);
             } else {
-                // Если это любая другая ошибка, выводим подробности в консоль
-                console.error(`Hugging Face API Error for ${network.name}:`);
-                if (error.response) {
-                    // Ошибка пришла от сервера (неверный токен, проблемы с моделью и т.д.)
-                    console.error(`Status: ${error.response.status}`);
-                    console.error(`Data: ${JSON.stringify(error.response.data, null, 2)}`);
-                } else {
-                    // Ошибка сети (нет интернета, DNS и т.д.)
-                    console.error(`Message: ${error.message}`);
-                }
-                // И выбрасываем понятную ошибку дальше
-                throw new Error(`Не удалось получить ответ от "${network.name}". Проверьте консоль для деталей.`);
+                console.error(`Сообщение: ${error.message}`);
             }
-            // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+            throw new Error(`Не удалось получить ответ от "${network.name}". Возможно, неверный API ключ Groq или сервис временно недоступен.`);
         }
     }
 }
 
 class NeuralCollaborativeFramework {
     constructor(sendMessageCallback) {
-        this.sendMessage = sendMessageCallback; // Функция для отправки сообщений в Telegram
+        this.sendMessage = sendMessageCallback;
         this.networkManager = new NetworkManager();
         this.promptGenerator = new PromptGenerator();
         this.resetProject();
@@ -112,15 +80,14 @@ class NeuralCollaborativeFramework {
         this.projectName = '';
         this.projectDescription = '';
         this.iterations = 0;
-        this.maxIterations = 3; // По умолчанию 3 итерации для бота
-        this.discussionHistory = [];
+        this.maxIterations = 2; // 2 итерации для скорости
         this.acceptedSummaries = [];
         this.isWorking = false;
     }
 
     async startCollaboration(topic) {
         if (this.isWorking) {
-            this.sendMessage("Я уже занят обсуждением. Пожалуйста, подождите его окончания или сбросьте командой /reset.");
+            this.sendMessage("Я уже занят обсуждением. Используйте /reset для сброса.");
             return;
         }
 
@@ -129,14 +96,14 @@ class NeuralCollaborativeFramework {
         this.projectDescription = topic;
         this.projectName = topic.length > 50 ? topic.substring(0, 50) + '...' : topic;
 
-        this.sendMessage(`*Начинаю коллаборацию на тему:* "${this.projectName}"\n\n_Нейросетям может потребоваться время на ответ, особенно при первом запуске._`);
+        this.sendMessage(`*Начинаю коллаборацию на тему:* "${this.projectName}"`);
 
         try {
             await this.runDiscussionLoop();
             await this.finalizeDevelopment();
         } catch (error) {
             console.error(error);
-            this.sendMessage(`❗️*Произошла ошибка во время обсуждения:*\n${error.message}\n\nПопробуйте еще раз или проверьте токен Hugging Face.`);
+            this.sendMessage(`❗️*Произошла ошибка:* ${error.message}`);
         } finally {
             this.isWorking = false;
         }
@@ -148,24 +115,21 @@ class NeuralCollaborativeFramework {
             this.sendMessage(`\n\n--- 💬 *Итерация ${this.iterations} из ${this.maxIterations}* ---\n`);
             
             const prompt = this.promptGenerator.createIterationPrompt(
-                this.projectName,
-                this.projectDescription,
-                this.iterations,
-                this.acceptedSummaries
+                this.projectName, this.projectDescription, this.iterations, this.acceptedSummaries
             );
 
             let currentDiscussion = prompt;
-            const networkIds = ['network1', 'network2', 'network3'];
+            const networkIds = ['network1', 'network2'];
 
             for (const networkId of networkIds) {
                 const networkName = this.networkManager.networks[networkId].name;
                 this.sendMessage(`🤔 _${networkName} думает..._`);
                 const response = await this.networkManager.generateResponse(networkId, currentDiscussion);
                 this.sendMessage(`*${networkName}:*\n${response}`);
-                currentDiscussion += `\n${networkName}: ${response}`;
+                currentDiscussion += `\n\n**${networkName}'s input:**\n${response}`;
             }
 
-            this.sendMessage(`📝 _Синтезатор анализирует обсуждение..._`);
+            this.sendMessage(`📝 _Синтезатор анализирует..._`);
             const summary = await this.networkManager.generateResponse('summarizer', currentDiscussion);
             this.sendMessage(`*Сводка итерации ${this.iterations}:*\n${summary}`);
             this.acceptedSummaries.push(summary);
@@ -174,7 +138,7 @@ class NeuralCollaborativeFramework {
 
     async finalizeDevelopment() {
         this.sendMessage("\n\n--- 🏁 *Все итерации завершены. Формирую итоговый отчет...* ---");
-        const finalPrompt = `Based on the topic "${this.projectDescription}" and the following summaries from each iteration of a collaborative discussion, create a comprehensive final output. \n\nSummaries:\n${this.acceptedSummaries.join('\n\n')}`;
+        const finalPrompt = `Based on the topic "${this.projectDescription}" and the following summaries, create a comprehensive final output. \n\nSummaries:\n${this.acceptedSummaries.join('\n\n')}`;
         const finalOutput = await this.networkManager.generateResponse('summarizer', finalPrompt);
         this.sendMessage(`*Итоговый результат коллаборации:*\n\n${finalOutput}`);
     }
@@ -182,18 +146,21 @@ class NeuralCollaborativeFramework {
 
 // --- ЛОГИКА ТЕЛЕГРАМ БОТА ---
 
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-const chatSessions = {}; // Хранилище сессий для каждого чата
+if (!TELEGRAM_TOKEN || !GROQ_API_KEY) {
+    console.error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN или GROQ_API_KEY не найдены в .env файле!");
+    process.exit(1);
+}
 
-console.log('Бот успешно запущен!');
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+const chatSessions = {};
+
+console.log('Бот успешно запущен и готов к работе!');
 
 bot.onText(/\/start/, (msg) => {
-    const chatId = msg.chat.id;
-    bot.sendMessage(chatId,
-        "Привет! Я бот, в котором нейросети могут общаться между собой.\n\n" +
+    bot.sendMessage(msg.chat.id,
+        "Привет! Я бот для коллаборации нейросетей.\n\n" +
         "Используйте команду `/discuss <ваша тема>`, чтобы начать.\n\n" +
-        "Например:\n`/discuss Перспективы колонизации Марса`\n\n" +
-        "Чтобы остановить текущее обсуждение, используйте команду `/reset`."
+        "Например:\n`/discuss Плюсы и минусы удаленной работы`"
     );
 });
 
@@ -202,38 +169,18 @@ bot.onText(/\/discuss (.+)/, (msg, match) => {
     const topic = match[1];
 
     if (!chatSessions[chatId]) {
-        const sendMessageCallback = (text) => {
-            bot.sendMessage(chatId, text, { parse_mode: 'Markdown' }).catch(err => {
-                // Если ошибка форматирования, отправляем как обычный текст
-                if (err.response && err.response.body.description.includes('parse error')) {
-                    bot.sendMessage(chatId, text);
-                } else {
-                    console.error("Telegram send error:", err);
-                }
-            });
-        };
-        // Сохраняем коллбэк в глобальную переменную, чтобы он был доступен в NetworkManager
-        global.sendMessageCallback = sendMessageCallback;
-        chatSessions[chatId] = new NeuralCollaborativeFramework(sendMessageCallback);
+        chatSessions[chatId] = new NeuralCollaborativeFramework((text) => {
+            bot.sendMessage(chatId, text, { parse_mode: 'Markdown' })
+               .catch(() => bot.sendMessage(chatId, text)); // Отправка как обычный текст, если Markdown не удался
+        });
     }
-
     chatSessions[chatId].startCollaboration(topic);
 });
 
 bot.onText(/\/reset/, (msg) => {
     const chatId = msg.chat.id;
-    if (chatSessions[chatId]) {
-        if (chatSessions[chatId].isWorking) {
-            chatSessions[chatId].isWorking = false; // Прерываем цикл, если он активен
-        }
-        delete chatSessions[chatId];
-        bot.sendMessage(chatId, "Текущее обсуждение сброшено. Готов к новой теме!");
-    } else {
-        bot.sendMessage(chatId, "Нет активных обсуждений для сброса.");
-    }
+    delete chatSessions[chatId];
+    bot.sendMessage(chatId, "Обсуждение сброшено. Готов к новой теме!");
 });
 
-// Обработка ошибок, чтобы бот не падал
-bot.on('polling_error', (error) => {
-    console.log(`Polling error: ${error.code} - ${error.message}`);
-});
+bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.message}`));
