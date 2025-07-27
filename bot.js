@@ -671,5 +671,3 @@ bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.me
 const app = express();
 app.get('/', (req, res) => res.send('Бот жив и здоров!'));
 app.listen(PORT, () => console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`));```
-
-
