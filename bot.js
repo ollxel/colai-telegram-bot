@@ -670,4 +670,6 @@ bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.me
 // --- ВЕБ-СЕРВЕР ДЛЯ RENDER.COM ---
 const app = express();
 app.get('/', (req, res) => res.send('Бот жив и здоров!'));
-a
+app.listen(PORT, () => console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`));```
+
+
