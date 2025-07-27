@@ -14,10 +14,6 @@ const AVAILABLE_MODELS = ['llama3-8b-8192', 'llama3-70b-8192', 'mixtral-8x7b-327
 
 // --- КЛАССЫ ПРОЕКТА ---
 
-class PromptGenerator {
-    // Этот класс теперь не нужен, так как логика промптов стала сложнее и переехала в Framework
-}
-
 class NetworkManager {
     constructor() {
         this.networks = {
@@ -43,7 +39,6 @@ class NetworkManager {
         const maxRetries = 3;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                // Небольшая задержка перед каждым запросом для профилактики
                 await new Promise(resolve => setTimeout(resolve, 1000));
 
                 const response = await axios.post(
@@ -63,11 +58,8 @@ class NetworkManager {
             } catch (error) {
                 console.error(`\n--- ОШИБКА API GROQ для "${network.name}", попытка ${attempt} ---`);
                 if (error.response && error.response.status === 429) {
-                    // Это ошибка Rate Limit
                     const errorMessage = error.response.data.error.message;
-                    let waitTime = 20; // Время ожидания по умолчанию
-                    
-                    // Пытаемся извлечь точное время ожидания из ответа API
+                    let waitTime = 20;
                     const match = errorMessage.match(/try again in ([\d.]+)s/i);
                     if (match && match[1]) {
                         waitTime = Math.ceil(parseFloat(match[1]));
@@ -80,12 +72,11 @@ class NetworkManager {
                     
                     if (attempt < maxRetries) {
                         await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
-                        continue; // Переходим к следующей попытке
+                        continue;
                     } else {
-                        throw new Error(`Слишком много запросов к "${network.name}". Лимит не сбросился после нескольких попыток.`);
+                        throw new Error(`Слишком много запросов к "${network.name}". Лимит не сбросился.`);
                     }
                 } else {
-                    // Если ошибка другая, выводим ее и прекращаем попытки
                     if (error.response) {
                         console.error(`Статус: ${error.response.status}, Данные: ${JSON.stringify(error.response.data)}`);
                     } else {
@@ -110,7 +101,7 @@ class NeuralCollaborativeFramework {
         this.settings = {
             model: 'llama3-8b-8192',
             temperature: 0.7,
-            max_tokens: 768, // Уменьшаем по умолчанию, чтобы не превышать лимиты
+            max_tokens: 1024,
             discussion_language: 'Russian',
             enabled_networks: ['network1', 'network2'],
             system_prompts: {
@@ -168,12 +159,11 @@ class NeuralCollaborativeFramework {
             this.iterations++;
             this.sendMessage(`\n\n--- 💬 *Итерация ${this.iterations} из ${this.maxIterations}* ---\n`);
             
-            let iterationHistory = ""; // История только для текущей итерации
+            let iterationHistory = "";
 
             for (const networkId of this.settings.enabled_networks) {
                 const networkName = this.networkManager.networks[networkId].name;
                 
-                // Формируем промпт: общая тема + принятые саммари + история текущей итерации
                 let prompt = `Main Topic: "${this.projectDescription}"\n\n`;
                 if (this.acceptedSummaries.length > 0) {
                     prompt += `Here are the accepted summaries from previous rounds:\n${this.acceptedSummaries.map((s, i) => `Summary ${i+1}: ${s}`).join('\n\n')}\n\n`;
@@ -184,11 +174,9 @@ class NeuralCollaborativeFramework {
                 const response = await this.networkManager.generateResponse(networkId, prompt, this.settings, this.sendMessage);
                 this.sendMessage(`*${networkName}:*\n${response}`);
                 
-                // Добавляем ответ в историю этой итерации
                 iterationHistory += `\n\n**${networkName} said:**\n${response}`;
             }
 
-            // Добавляем историю итерации в общую историю
             fullConversationHistory += iterationHistory;
 
             this.sendMessage(`📝 _Синтезатор анализирует..._`);
@@ -243,6 +231,7 @@ if (!TELEGRAM_TOKEN || !GROQ_API_KEY) {
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const chatSessions = {};
+const activeRequests = {}; // Для отслеживания, какого ответа мы ждем от пользователя
 
 bot.setMyCommands([
     { command: '/start', description: '🚀 Помощь и информация о боте' },
@@ -284,13 +273,11 @@ bot.onText(/\/start/, (msg) => {
 
 *Основные возможности:*
 - *🚀 Новое Обсуждение:* Запустить диалог нейросетей.
-- *⚙️ Настройки:* Управлять участниками диалога, выбирать AI-модели и язык общения.
+- *⚙️ Настройки:* Управлять участниками диалога, выбирать AI-модели и настраивать их поведение.
 - \`/reset\`: Сбросить все настройки к значениям по умолчанию.
     `;
     bot.sendMessage(msg.chat.id, welcomeText, { ...MAIN_KEYBOARD, parse_mode: 'Markdown' });
 });
-
-const activeTopicRequests = new Set();
 
 bot.on('message', (msg) => {
     const chatId = msg.chat.id;
@@ -298,16 +285,16 @@ bot.on('message', (msg) => {
 
     if (text.startsWith('/')) return;
 
-    if (activeTopicRequests.has(chatId)) {
-        activeTopicRequests.delete(chatId);
-        getOrCreateSession(chatId).startCollaboration(text);
+    // Проверяем, ждем ли мы ответа от пользователя для настройки
+    if (activeRequests[chatId]) {
+        handleActiveRequest(chatId, text);
         return;
     }
 
     switch (text) {
         case '🚀 Новое Обсуждение':
             bot.sendMessage(chatId, 'Какую тему вы хотите обсудить? Просто напишите ее в чат.');
-            activeTopicRequests.add(chatId);
+            activeRequests[chatId] = { type: 'topic' };
             break;
         case '⚙️ Настройки':
             sendSettingsMessage(chatId);
@@ -319,6 +306,8 @@ bot.onText(/\/reset/, (msg) => {
     delete chatSessions[msg.chat.id];
     bot.sendMessage(msg.chat.id, "Обсуждение и настройки сброшены к значениям по умолчанию.", MAIN_KEYBOARD);
 });
+
+// --- ЛОГИКА МЕНЮ НАСТРОЕК ---
 
 function sendSettingsMessage(chatId) {
     const session = getOrCreateSession(chatId);
@@ -344,6 +333,7 @@ function sendSettingsMessage(chatId) {
             inline_keyboard: [
                 [{ text: '🕹 Участники', callback_data: 'menu_toggle' }],
                 [{ text: '🤖 AI-Модель', callback_data: 'menu_model' }, { text: '🌍 Язык', callback_data: 'menu_lang' }],
+                [{ text: '🔧 Продвинутые настройки', callback_data: 'menu_advanced' }],
                 [{ text: '❌ Закрыть', callback_data: 'close_settings' }]
             ]
         }
@@ -371,16 +361,34 @@ bot.on('callback_query', (query) => {
         updateToggleMenu(chatId, messageId, session);
     } else if (data.startsWith('set_model_')) {
         session.settings.model = data.replace('set_model_', '');
-        updateModelMenu(chatId, messageId, session); // Обновляем меню, чтобы показать выбор
+        updateModelMenu(chatId, messageId, session);
     } else if (data.startsWith('set_lang_')) {
         session.settings.discussion_language = data.replace('set_lang_', '');
-        updateLangMenu(chatId, messageId, session); // Обновляем меню
+        updateLangMenu(chatId, messageId, session);
+    } else if (data.startsWith('prompt_for_')) {
+        const networkId = data.replace('prompt_for_', '');
+        const networkName = session.networkManager.networks[networkId].name;
+        bot.sendMessage(chatId, `Пришлите следующим сообщением новый системный промпт для "${networkName}":`);
+        activeRequests[chatId] = { type: 'system_prompt', networkId: networkId };
+        bot.deleteMessage(chatId, messageId);
+    } else if (data === 'set_temp_prompt') {
+        bot.sendMessage(chatId, `Пришлите следующим сообщением новое значение температуры (число от 0.0 до 2.0):`);
+        activeRequests[chatId] = { type: 'temperature' };
+        bot.deleteMessage(chatId, messageId);
+    } else if (data === 'set_tokens_prompt') {
+        bot.sendMessage(chatId, `Пришлите следующим сообщением новый лимит токенов (число от 1 до 32768):`);
+        activeRequests[chatId] = { type: 'max_tokens' };
+        bot.deleteMessage(chatId, messageId);
     } else if (data === 'menu_toggle') {
         updateToggleMenu(chatId, messageId, session);
     } else if (data === 'menu_model') {
         updateModelMenu(chatId, messageId, session);
     } else if (data === 'menu_lang') {
         updateLangMenu(chatId, messageId, session);
+    } else if (data === 'menu_advanced') {
+        updateAdvancedMenu(chatId, messageId, session);
+    } else if (data === 'menu_prompts') {
+        updatePromptsMenu(chatId, messageId, session);
     } else if (data === 'back_to_settings') {
         bot.deleteMessage(chatId, messageId);
         sendSettingsMessage(chatId);
@@ -407,36 +415,99 @@ function updateToggleMenu(chatId, messageId, session) {
     bot.editMessageText('*Включите или выключите участников обсуждения:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
-    }).catch(e => console.log("Не удалось отредактировать сообщение, возможно, оно не изменилось."));
+    }).catch(() => {});
 }
 
 function updateModelMenu(chatId, messageId, session) {
     const currentModel = session.settings.model;
-    const keyboard = AVAILABLE_MODELS.map(model => {
-        const prefix = model === currentModel ? '🔘' : '⚪️';
-        return [{ text: `${prefix} ${model}`, callback_data: `set_model_${model}` }];
-    });
+    const keyboard = AVAILABLE_MODELS.map(model => ([{ text: `${model === currentModel ? '🔘' : '⚪️'} ${model}`, callback_data: `set_model_${model}` }]));
     keyboard.push([{ text: '⬅️ Назад в Настройки', callback_data: 'back_to_settings' }]);
     
     bot.editMessageText('*Выберите AI-модель для обсуждения:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
-    }).catch(e => console.log("Не удалось отредактировать сообщение, возможно, оно не изменилось."));
+    }).catch(() => {});
 }
 
 function updateLangMenu(chatId, messageId, session) {
     const currentLang = session.settings.discussion_language;
     const languages = ['Russian', 'English', 'German', 'French', 'Ukrainian'];
-    const keyboard = languages.map(lang => {
-        const prefix = lang === currentLang ? '🔘' : '⚪️';
-        return [{ text: `${prefix} ${lang}`, callback_data: `set_lang_${lang}` }];
-    });
+    const keyboard = languages.map(lang => ([{ text: `${lang === currentLang ? '🔘' : '⚪️'} ${lang}`, callback_data: `set_lang_${lang}` }]));
     keyboard.push([{ text: '⬅️ Назад в Настройки', callback_data: 'back_to_settings' }]);
 
     bot.editMessageText('*Выберите язык, на котором будут общаться нейросети:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
-    }).catch(e => console.log("Не удалось отредактировать сообщение, возможно, оно не изменилось."));
+    }).catch(() => {});
+}
+
+function updateAdvancedMenu(chatId, messageId, session) {
+    const s = session.settings;
+    const text = `
+*Продвинутые настройки:*
+
+- *Температура:* \`${s.temperature}\` (влияет на креативность)
+- *Макс. токенов:* \`${s.max_tokens}\` (влияет на длину ответа)
+    `;
+    const keyboard = [
+        [{ text: '🌡️ Температура', callback_data: 'set_temp_prompt' }, { text: '📄 Макс. токенов', callback_data: 'set_tokens_prompt' }],
+        [{ text: '🧠 Системные промпты', callback_data: 'menu_prompts' }],
+        [{ text: '⬅️ Назад в Настройки', callback_data: 'back_to_settings' }]
+    ];
+
+    bot.editMessageText(text, {
+        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    }).catch(() => {});
+}
+
+function updatePromptsMenu(chatId, messageId, session) {
+    const { networks } = session.networkManager;
+    const buttons = Object.entries(networks).map(([id, net]) => ([{ text: net.name, callback_data: `prompt_for_${id}` }]));
+    buttons.push([{ text: '⬅️ Назад', callback_data: 'menu_advanced' }]);
+
+    bot.editMessageText('*Выберите нейросеть, чтобы изменить ее системный промпт (личность):*', {
+        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: buttons }
+    }).catch(() => {});
+}
+
+function handleActiveRequest(chatId, text) {
+    const request = activeRequests[chatId];
+    const session = getOrCreateSession(chatId);
+    delete activeRequests[chatId]; // Важно: удаляем запрос, чтобы не сработал дважды
+
+    switch (request.type) {
+        case 'topic':
+            session.startCollaboration(text);
+            break;
+        case 'temperature':
+            const temp = parseFloat(text);
+            if (!isNaN(temp) && temp >= 0.0 && temp <= 2.0) {
+                session.settings.temperature = temp;
+                bot.sendMessage(chatId, `✅ Температура установлена на: \`${temp}\``, { parse_mode: 'Markdown' });
+            } else {
+                bot.sendMessage(chatId, '❌ Ошибка. Введите число от 0.0 до 2.0.');
+            }
+            sendSettingsMessage(chatId);
+            break;
+        case 'max_tokens':
+            const tokens = parseInt(text, 10);
+            if (!isNaN(tokens) && tokens > 0 && tokens <= 32768) {
+                session.settings.max_tokens = tokens;
+                bot.sendMessage(chatId, `✅ Лимит токенов установлен на: \`${tokens}\``, { parse_mode: 'Markdown' });
+            } else {
+                bot.sendMessage(chatId, '❌ Ошибка. Введите целое число от 1 до 32768.');
+            }
+            sendSettingsMessage(chatId);
+            break;
+        case 'system_prompt':
+            session.settings.system_prompts[request.networkId] = text;
+            const networkName = session.networkManager.networks[request.networkId].name;
+            bot.sendMessage(chatId, `✅ Системный промпт для "${networkName}" обновлен.`);
+            sendSettingsMessage(chatId);
+            break;
+    }
 }
 
 bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.message}`));
