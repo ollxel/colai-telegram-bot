@@ -21,7 +21,6 @@ const PORT = process.env.PORT || 3000;
 
 const AVAILABLE_MODELS = ['llama3-8b-8192', 'llama3-70b-8192', 'mixtral-8x7b-32768', 'gemma-7b-it'];
 
-// --- НОВОЕ: Ключевые слова для голосования на разных языках ---
 const VOTE_KEYWORDS = {
     'English': { accept: 'accept', reject: 'reject' },
     'Russian': { accept: 'принимаю', reject: 'отклоняю' },
@@ -174,7 +173,7 @@ class NeuralCollaborativeFramework {
             this.settings.staged_files = [];
 
             await this.runDiscussionLoop(fileContext);
-            if (this.isWorking) await this.finalizeDevelopment(); // Финализируем, только если не было остановки
+            if (this.isWorking) await this.finalizeDevelopment();
         } catch (error) {
             console.error(error);
             this.sendMessage(`❗️*Произошла ошибка:* ${error.message}`);
@@ -380,17 +379,15 @@ bot.onText(/\/reset/, (msg) => {
     bot.sendMessage(msg.chat.id, "Обсуждение и настройки сброшены.", MAIN_KEYBOARD);
 });
 
-// --- НОВОЕ: Команда для остановки генерации ---
 bot.onText(/\/stop/, (msg) => {
     const session = getOrCreateSession(msg.chat.id);
     if (session.isWorking) {
-        session.isWorking = false; // Устанавливаем флаг остановки
+        session.isWorking = false;
         bot.sendMessage(msg.chat.id, "🛑 Получен сигнал остановки. Завершаю текущую операцию...");
     } else {
         bot.sendMessage(msg.chat.id, "Сейчас нет активного обсуждения, чтобы его останавливать.");
     }
 });
-
 
 function sendSettingsMessage(chatId) {
     const session = getOrCreateSession(chatId);
@@ -444,7 +441,7 @@ bot.on('callback_query', (query) => {
             session.settings.discussion_language = value;
             updateLangMenu(chatId, messageId, session);
             break;
-        case 'setiterations': // --- ИСПРАВЛЕНО: Добавлен обработчик ---
+        case 'setiterations':
             session.settings.iteration_count = parseInt(value, 10);
             updateAdvancedMenu(chatId, messageId, session);
             break;
@@ -670,4 +667,4 @@ bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.me
 // --- ВЕБ-СЕРВЕР ДЛЯ RENDER.COM ---
 const app = express();
 app.get('/', (req, res) => res.send('Бот жив и здоров!'));
-app.listen(PORT, () => console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`));```
+app.listen(PORT, () => console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`));
