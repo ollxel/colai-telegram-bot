@@ -12,14 +12,27 @@ const path = require('path');
 
 // --- КОНФИГУРАЦИЯ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
-const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
-const AVAILABLE_MODELS = ['llama3-8b-8192', 'llama3-70b-8192', 'mixtral-8x7b-32768', 'gemma-7b-it'];
+// --- НОВОЕ: Карта моделей на OpenRouter ---
+const MODEL_MAP = {
+    'Llama 3 8B': 'meta-llama/llama-3-8b-instruct',
+    'Mistral 7B': 'mistralai/mistral-7b-instruct',
+    'Qwen 7B Chat': 'qwen/qwen-7b-chat',
+    'Gemma 7B': 'google/gemma-7b-it',
+    'Deepseek Coder': 'deepseek/deepseek-coder-6.7b-instruct',
+    'Nous Hermes 2': 'nousresearch/nous-hermes-2-mixtral-8x7b-dpo',
+    'Llama 3 70B': 'meta-llama/llama-3-70b-instruct',
+    'Claude 3 Haiku': 'anthropic/claude-3-haiku',
+    'GPT-3.5 Turbo': 'openai/gpt-3.5-turbo',
+    'Zephyr 7B': 'huggingfaceh4/zephyr-7b-beta'
+};
+const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
 const VOTE_KEYWORDS = {
     'English': { accept: 'accept', reject: 'reject' },
@@ -54,7 +67,6 @@ class NetworkManager {
         systemPrompt += `\n\nIMPORTANT INSTRUCTION: You MUST respond ONLY in ${settings.discussion_language}. Do not use any other language.`;
         
         const temp = settings.custom_networks[networkId]?.temperature || settings.temperature;
-        
         const modelContextLimit = 8192;
         const promptTokens = Math.ceil(prompt.length / 3.5); 
         const availableTokensForResponse = modelContextLimit - promptTokens - 200; 
@@ -68,39 +80,29 @@ class NetworkManager {
             availableTokensForResponse
         );
 
-        const maxRetries = 3;
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                const response = await axios.post(
-                    GROQ_API_URL,
-                    {
-                        model: settings.model,
-                        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: prompt }],
-                        temperature: temp,
-                        max_tokens: finalMaxTokens,
-                    },
-                    { headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` } }
-                );
-                return response.data.choices[0].message.content.trim();
-            } catch (error) {
-                if (error.response && error.response.status === 429) {
-                    const errorMessage = error.response.data.error.message;
-                    let waitTime = 20;
-                    const match = errorMessage.match(/try again in ([\d.]+)s/i);
-                    if (match && match[1]) waitTime = Math.ceil(parseFloat(match[1]));
-                    if (sendMessageCallback) sendMessageCallback(`⏳ _Достигнут лимит API, жду ${waitTime} секунд..._`);
-                    if (attempt < maxRetries) {
-                        await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
-                        continue;
-                    } else {
-                        throw new Error(`Слишком много запросов к "${network.name}".`);
-                    }
-                } else {
-                    console.error(`Ошибка API GROQ для "${network.name}":`, error.response ? error.response.data : error.message);
-                    throw new Error(`Не удалось получить ответ от "${network.name}".`);
+        try {
+            await new Promise(resolve => setTimeout(resolve, 500)); // Небольшая задержка для профилактики
+            const response = await axios.post(
+                OPENROUTER_API_URL,
+                {
+                    model: MODEL_MAP[settings.model], // Используем полное имя модели
+                    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: prompt }],
+                    temperature: temp,
+                    max_tokens: finalMaxTokens,
+                },
+                { 
+                    headers: { 
+                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                        'HTTP-Referer': 'https://github.com/ollxel/neural-collab-bot', // Рекомендовано OpenRouter
+                        'X-Title': 'Neural Collab Bot' // Рекомендовано OpenRouter
+                    } 
                 }
-            }
+            );
+            return response.data.choices[0].message.content.trim();
+        } catch (error) {
+            console.error(`Ошибка API OpenRouter для "${network.name}":`, error.response ? error.response.data : error.message);
+            const errorDetails = error.response?.data?.error?.message || "Неизвестная ошибка API.";
+            throw new Error(`Не удалось получить ответ от "${network.name}": ${errorDetails}`);
         }
     }
 
@@ -130,7 +132,7 @@ class NeuralCollaborativeFramework {
 
     initializeSettings() {
         this.settings = {
-            model: 'llama3-8b-8192',
+            model: 'Llama 3 8B', // Используем короткое имя для настроек
             temperature: 0.7,
             max_tokens: 1024,
             discussion_language: 'Russian',
@@ -290,8 +292,8 @@ class NeuralCollaborativeFramework {
 
 // --- ЛОГИКА ТЕЛЕГРАМ БОТА ---
 
-if (!TELEGRAM_TOKEN || !GROQ_API_KEY) {
-    console.error("КРИТИЧЕСКАЯ ОШИБКА: Токены не найдены в .env файле!");
+if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
+    console.error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN или OPENROUTER_API_KEY не найдены в .env файле!");
     process.exit(1);
 }
 
@@ -343,13 +345,7 @@ bot.on('message', (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
-    if (text && text.startsWith('/')) return;
-
-    if (activeRequests[chatId]) {
-        handleActiveRequest(chatId, msg);
-        return;
-    }
-    
+    // --- ИСПРАВЛЕНО: Обработка файлов идет в первую очередь ---
     if (msg.photo || msg.document) {
         const session = getOrCreateSession(chatId);
         const file = msg.document || msg.photo[msg.photo.length - 1];
@@ -360,6 +356,17 @@ bot.on('message', (msg) => {
             mime_type: msg.document?.mime_type || 'image/jpeg'
         });
         bot.sendMessage(chatId, `✅ Файл "${fileName}" добавлен и будет использован в следующем обсуждении.`);
+        // Если мы ждали тему, отменяем ожидание, так как получили файл
+        if (activeRequests[chatId]?.type === 'topic') {
+            delete activeRequests[chatId];
+        }
+        return;
+    }
+
+    if (text && text.startsWith('/')) return;
+
+    if (activeRequests[chatId]) {
+        handleActiveRequest(chatId, msg);
         return;
     }
 
@@ -512,7 +519,7 @@ function updateToggleMenu(chatId, messageId, session) {
 }
 
 function updateModelMenu(chatId, messageId, session) {
-    const keyboard = AVAILABLE_MODELS.map(model => ([{ text: `${model === session.settings.model ? '🔘' : '⚪️'} ${model}`, callback_data: `setmodel_${model}` }]));
+    const keyboard = AVAILABLE_MODELS.map(modelName => ([{ text: `${modelName === session.settings.model ? '🔘' : '⚪️'} ${modelName}`, callback_data: `setmodel_${modelName}` }]));
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
     bot.editMessageText('*Выберите AI-модель:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
