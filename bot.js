@@ -17,18 +17,15 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
-// --- ВАШ СПИСОК МОДЕЛЕЙ (ИСПРАВЛЕННЫЙ И РАБОЧИЙ) ---
 const MODEL_MAP = {
-    'Deepseek R1 Distill Llama 70B': 'deepseek/deepseek-r1-distill-llama-70b:free',
-    'Mistral 7B': 'mistralai/mistral-7b-instruct',
-    'Qwen3 Coder': 'qwen/qwen3-coder:free',
-    'Gemma 7B': 'google/gemma-7b-it',
-    'Deepseek R1 Qwen3 8b': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
-    'Deepseek R1': 'deepseek/deepseek-r1:free',
-    'Llama 3.2 3B ': 'meta-llama/llama-3.2-3b-instruct:free',
-    'Gemini 2.5 Pro': 'google/gemini-2.5-pro-exp-03-25',
-    'Kimi K2': 'moonshotai/kimi-k2:free',
-    'Venice Uncensored': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
+    'Mistral 7B (Надежный)': 'mistralai/mistral-7b-instruct:free',
+    'Llama 3 8B (Быстрый)': 'meta-llama/llama-3-8b-instruct:free',
+    'Gemma 7B (от Google)': 'google/gemma-7b-it:free',
+    'Qwen 1.5 7B (Хороший)': 'qwen/qwen-1.5-7b-chat:free',
+    'Llama 3 70B (Мощный)': 'meta-llama/llama-3-70b-instruct:free',
+    'Mixtral 8x7B (Большой)': 'mistralai/mixtral-8x7b-instruct:free',
+    'Claude 3 Haiku': 'anthropic/claude-3-haiku:free',
+    'Code Llama 70B (Кодер)': 'meta-llama/codellama-70b-instruct:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -150,7 +147,7 @@ class NeuralCollaborativeFramework {
 
     initializeSettings() {
         this.settings = {
-            model: 'Llama 3 8B (Быстрый)',
+            model: 'Mistral 7B (Надежный)',
             temperature: 0.7,
             max_tokens: 1024,
             discussion_language: 'Russian',
@@ -420,6 +417,17 @@ const callbackQueryHandlers = {
         }
         updateToggleMenu(chatId, messageId, session);
     },
+    order: (session, value, chatId, messageId) => {
+        const [direction, networkId] = value.split('_');
+        const order = session.settings.enabled_networks;
+        const index = order.indexOf(networkId);
+        if (direction === 'up' && index > 0) {
+            [order[index], order[index - 1]] = [order[index - 1], order[index]];
+        } else if (direction === 'down' && index < order.length - 1) {
+            [order[index], order[index + 1]] = [order[index + 1], order[index]];
+        }
+        updateOrderMenu(chatId, messageId, session);
+    },
     setmodel: (session, value, chatId, messageId) => {
         session.settings.model = value;
         updateModelMenu(chatId, messageId, session);
@@ -451,6 +459,7 @@ const callbackQueryHandlers = {
     menu: (session, value, chatId, messageId) => {
         const menuActions = {
             'toggle': updateToggleMenu,
+            'order': updateOrderMenu,
             'model': updateModelMenu,
             'lang': updateLangMenu,
             'advanced': updateAdvancedMenu,
@@ -499,14 +508,14 @@ function sendSettingsMessage(chatId) {
     const s = session.settings;
     const nm = session.networkManager;
 
-    const enabledNetworks = s.enabled_networks.map(id => nm.networks[id]?.name || s.custom_networks[id]?.name).join(', ');
+    const enabledNetworks = s.enabled_networks.map(id => nm.networks[id]?.name || s.custom_networks[id]?.name).join(', ') || 'Никто не включен';
     
-    const settingsText = `*Текущие настройки для этого чата:*\n\n*Участники:* ${enabledNetworks || 'Никто не включен'}\n*Язык:* \`${s.discussion_language}\`\n*AI-Модель:* \`${s.model}\``;
+    const settingsText = `*Текущие настройки для этого чата:*\n\n*Участники:* ${enabledNetworks}\n*Язык:* \`${s.discussion_language}\`\n*AI-Модель:* \`${s.model}\``;
 
     const inlineKeyboard = {
         reply_markup: {
             inline_keyboard: [
-                [{ text: '🕹 Участники', callback_data: 'menu_toggle' }],
+                [{ text: '🕹 Участники', callback_data: 'menu_toggle' }, { text: '🔀 Порядок', callback_data: 'menu_order' }],
                 [{ text: '🤖 AI-Модель', callback_data: 'menu_model' }, { text: '🌍 Язык', callback_data: 'menu_lang' }],
                 [{ text: '🧠 Мои Нейросети', callback_data: 'menu_custom' }],
                 [{ text: '🔧 Продвинутые настройки', callback_data: 'menu_advanced' }],
@@ -532,6 +541,29 @@ function updateToggleMenu(chatId, messageId, session) {
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
 
     bot.editMessageText('*Включите или выключите участников:*', {
+        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    }).catch(() => {});
+}
+
+function updateOrderMenu(chatId, messageId, session) {
+    const { enabled_networks, custom_networks } = session.settings;
+    const { networks } = session.networkManager;
+
+    if (enabled_networks.length < 2) {
+        bot.answerCallbackQuery(query.id, { text: 'Нужно включить хотя бы 2 сети для изменения порядка.', show_alert: true });
+        return;
+    }
+
+    const keyboard = enabled_networks.map((networkId, index) => {
+        const networkName = networks[networkId]?.name || custom_networks[networkId]?.name;
+        const upArrow = (index > 0) ? { text: '🔼', callback_data: `order_up_${networkId}` } : { text: ' ', callback_data: 'no_op' };
+        const downArrow = (index < enabled_networks.length - 1) ? { text: '🔽', callback_data: `order_down_${networkId}` } : { text: ' ', callback_data: 'no_op' };
+        return [upArrow, { text: networkName, callback_data: 'no_op' }, downArrow];
+    });
+    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
+
+    bot.editMessageText('*Измените порядок ответов нейросетей:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     }).catch(() => {});
