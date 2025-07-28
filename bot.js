@@ -19,15 +19,15 @@ const PORT = process.env.PORT || 3000;
 
 const MODEL_MAP = {
     'Deepseek R1 Distill Llama 70B': 'deepseek/deepseek-r1-distill-llama-70b:free',
-    'Mistral 7B': 'mistralai/mistral-7b-instruct:free', // Добавлен :free для стабильности
-    'Qwen3 Coder': 'qwen/qwen-1.5-7b-chat:free', // Заменено на более стабильную чат-версию
-    'Gemma 7B': 'google/gemma-7b-it:free', // Добавлен :free для стабильности
+    'Mistral 7B': 'mistralai/mistral-7b-instruct',
+    'Qwen3 Coder': 'qwen/qwen3-coder:free',
+    'Gemma 7B': 'google/gemma-7b-it',
     'Deepseek R1 Qwen3 8b': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
-    'Deepseek R1': 'deepseek/deepseek-chat', // Заменено на чат-версию для диалогов
-    'Llama 3.1 8B': 'meta-llama/llama-3.1-8b-instruct:free', // Исправлена версия на существующую
-    'Gemini Flash 1.5': 'google/gemini-flash-1.5', // Замена платной Pro на быструю Flash
-    'Kimi K2 (Moonshot)': 'moonshot-ai/moonshot-v1-128k',
-    'Venice Uncensored': 'cognitivecomputations/dolphin-mixtral-8x7b:free'
+    'Deepseek R1': 'deepseek/deepseek-r1:free',
+    'Llama 3.2 3B ': 'meta-llama/llama-3.2-3b-instruct:free',    
+    'Gemini 2.5 Pro': 'google/gemini-2.5-pro-exp-03-25',
+    'Kimi K2': 'moonshotai/kimi-k2:free',
+    'Venice Uncensored': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -54,7 +54,7 @@ class NetworkManager {
         };
     }
 
-    async generateResponse(networkId, prompt, settings, sendMessageCallback) {
+    async generateResponse(networkId, prompt, settings) {
         const network = this.networks[networkId] || settings.custom_networks[networkId];
         if (!network) throw new Error(`Network ${networkId} not found.`);
 
@@ -76,10 +76,9 @@ class NetworkManager {
             availableTokensForResponse
         );
 
-        const maxRetries = 3;
+        const maxRetries = 5; // Увеличиваем количество попыток
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                await new Promise(resolve => setTimeout(resolve, 500));
                 const response = await axios.post(
                     OPENROUTER_API_URL,
                     {
@@ -101,19 +100,16 @@ class NetworkManager {
                 const errorData = error.response?.data?.error;
                 
                 if (error.response && error.response.status === 429) {
-                    const errorMessage = errorData.message;
-                    let waitTime = 20;
-                    const match = errorMessage.match(/try again in ([\d.]+)s/i);
-                    if (match && match[1]) waitTime = Math.ceil(parseFloat(match[1]));
-                    if (sendMessageCallback) sendMessageCallback(`⏳ _Достигнут лимит API, жду ${waitTime} секунд..._`);
+                    console.log(`Rate limit hit. Attempt ${attempt}. Waiting silently...`);
+                    const waitTime = 5000 + Math.random() * 5000; // Ждем от 5 до 10 секунд
                     if (attempt < maxRetries) {
-                        await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
                         continue;
                     } else {
-                        throw new Error(`Слишком много запросов к "${network.name}".`);
+                        throw new Error(`Слишком много запросов к "${network.name}". Лимит не сбросился после нескольких попыток.`);
                     }
                 } else if (error.response && errorData && errorData.message && errorData.message.includes('No endpoints found')) {
-                    throw new Error(`Модель "${settings.model}" временно недоступна на бесплатном тарифе. Пожалуйста, выберите другую модель в настройках.`);
+                    throw new Error(`Модель "${settings.model}" временно недоступна. Пожалуйста, выберите другую модель в настройках.`);
                 } else {
                     console.error(`Ошибка API OpenRouter для "${network.name}":`, error.response ? error.response.data : error.message);
                     const errorDetails = errorData?.message || "Неизвестная ошибка API.";
@@ -254,17 +250,18 @@ class NeuralCollaborativeFramework {
                 prompt += `Here is the conversation from the current round so far:\n${iterationHistory}\n\n---\nAs the ${networkName}, provide your input now.`;
 
                 this.sendMessage(`🤔 _${networkName} думает..._`);
-                const response = await this.networkManager.generateResponse(networkId, prompt, this.settings, this.sendMessage);
+                const response = await this.networkManager.generateResponse(networkId, prompt, this.settings);
                 if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
                 this.sendMessage(`*${networkName}:*\n${response}`);
                 
                 iterationHistory += `\n\n**${networkName} said:**\n${response}`;
+                await new Promise(resolve => setTimeout(resolve, 3000)); // Пауза между нейросетями
             }
 
             if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
             this.sendMessage(`📝 _Синтезатор анализирует..._`);
             const summaryPrompt = `Please create a concise summary of the key points from the following discussion:\n\n${iterationHistory}`;
-            const summary = await this.networkManager.generateResponse('summarizer', summaryPrompt, this.settings, this.sendMessage);
+            const summary = await this.networkManager.generateResponse('summarizer', summaryPrompt, this.settings);
             if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
             this.sendMessage(`*Сводка итерации ${this.iterations}:*\n${summary}`);
             
@@ -279,11 +276,12 @@ class NeuralCollaborativeFramework {
                 if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
                 const networkName = this.networkManager.networks[networkId]?.name || this.settings.custom_networks[networkId]?.name;
                 const votePrompt = `Here is the discussion summary to vote on:\n"${summary}"\n\nAs the ${networkName}, do you accept this summary? Respond with ONLY the word "${keywords.accept}" or "${keywords.reject}" in ${this.settings.discussion_language}, followed by a brief reason.`;
-                const voteResponse = await this.networkManager.generateResponse(networkId, votePrompt, this.settings, this.sendMessage);
+                const voteResponse = await this.networkManager.generateResponse(networkId, votePrompt, this.settings);
                 if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
                 this.sendMessage(`*${networkName} голосует:*\n${voteResponse}`);
                 
                 if (acceptRegex.test(voteResponse)) votesFor++; else votesAgainst++;
+                await new Promise(resolve => setTimeout(resolve, 1500)); // Пауза между голосами
             }
 
             if (votesAgainst >= votesFor) {
@@ -302,7 +300,7 @@ class NeuralCollaborativeFramework {
         }
         this.sendMessage("\n\n--- 🏁 *Все итерации завершены. Формирую итоговый отчет...* ---");
         const finalPrompt = `Based on the topic "${this.projectDescription}" and the following accepted summaries, create a comprehensive final output. \n\nSummaries:\n${this.acceptedSummaries.join('\n\n')}`;
-        const finalOutput = await this.networkManager.generateResponse('summarizer', finalPrompt, this.settings, this.sendMessage);
+        const finalOutput = await this.networkManager.generateResponse('summarizer', finalPrompt, this.settings);
         this.sendMessage(`*Итоговый результат коллаборации:*\n\n${finalOutput}`);
     }
 }
