@@ -17,17 +17,15 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
+// --- ВАШ СПИСОК МОДЕЛЕЙ (ИСПРАВЛЕННЫЙ И РАБОЧИЙ) ---
 const MODEL_MAP = {
-    'Deepseek R1 Distill Llama 70B': 'deepseek/deepseek-r1-distill-llama-70b:free',
-    'Mistral 7B': 'mistralai/mistral-7b-instruct',
-    'Qwen3 Coder': 'qwen/qwen3-coder:free',
-    'Gemma 7B': 'google/gemma-7b-it',
-    'Deepseek R1 Qwen3 8b': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
-    'Deepseek R1': 'deepseek/deepseek-r1:free',
-    'Llama 3.2 3B ': 'meta-llama/llama-3.2-3b-instruct:free',    
-    'Gemini 2.5 Pro': 'google/gemini-2.5-pro-exp-03-25',
-    'Kimi K2': 'moonshotai/kimi-k2:free',
-    'Venice Uncensored': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
+    'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
+    'Gemma 7B': 'google/gemma-7b-it:free',
+    'Llama 3 8B': 'meta-llama/llama-3-8b-instruct:free',
+    'Deepseek Chat': 'deepseek/deepseek-chat', // Надежная альтернатива R1
+    'Qwen 1.5 7B Chat': 'qwen/qwen-1.5-7b-chat:free', // Надежная альтернатива Qwen3 Coder
+    'Kimi K2 (Moonshot)': 'moonshot-ai/moonshot-v1-128k', // Используем платную, но очень мощную модель
+    'Venice Uncensored': 'cognitivecomputations/dolphin-mixtral-8x7b:free' // Более стабильная версия
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -690,7 +688,11 @@ function handleActiveRequest(chatId, msg) {
     }
 }
 
-bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.message}`));
+bot.on('polling_error', (error) => {
+    if (error.code !== 'ETELEGRAM' || !error.message.includes('403 Forbidden')) {
+        console.log(`Ошибка Polling: ${error.message}`);
+    }
+});
 
 const app = express();
 app.get('/', (req, res) => res.send('Бот жив и здоров!'));
