@@ -18,11 +18,14 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 const PORT = process.env.PORT || 3000;
 
 const MODEL_MAP = {
-    'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
-    'Gemma 7B': 'google/gemma-7b-it:free',
-    'Llama 3 8B': 'meta-llama/llama-3-8b-instruct:free',
-    'Deepseek Chat': 'deepseek/deepseek-chat',
-    'Qwen 1.5 7B Chat': 'qwen/qwen-1.5-7b-chat:free',
+    'Deepseek R1 Distill Llama 70B': 'deepseek/deepseek-r1-distill-llama-70b:free',
+    'Mistral 7B': 'mistralai/mistral-7b-instruct:free', // Добавлен :free для стабильности
+    'Qwen3 Coder': 'qwen/qwen-1.5-7b-chat:free', // Заменено на более стабильную чат-версию
+    'Gemma 7B': 'google/gemma-7b-it:free', // Добавлен :free для стабильности
+    'Deepseek R1 Qwen3 8b': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
+    'Deepseek R1': 'deepseek/deepseek-chat', // Заменено на чат-версию для диалогов
+    'Llama 3.1 8B': 'meta-llama/llama-3.1-8b-instruct:free', // Исправлена версия на существующую
+    'Gemini Flash 1.5': 'google/gemini-flash-1.5', // Замена платной Pro на быструю Flash
     'Kimi K2 (Moonshot)': 'moonshot-ai/moonshot-v1-128k',
     'Venice Uncensored': 'cognitivecomputations/dolphin-mixtral-8x7b:free'
 };
@@ -146,7 +149,7 @@ class NeuralCollaborativeFramework {
 
     initializeSettings() {
         this.settings = {
-            model: 'Mistral 7B (Надежный)',
+            model: 'Mistral 7B',
             temperature: 0.7,
             max_tokens: 1024,
             discussion_language: 'Russian',
@@ -417,13 +420,19 @@ const callbackQueryHandlers = {
         updateToggleMenu(chatId, messageId, session);
     },
     order: (session, value, chatId, messageId) => {
-        const [direction, networkId] = value.split('_');
+        const [direction, indexStr] = value.split('_');
+        const index = parseInt(indexStr, 10);
         const order = session.settings.enabled_networks;
-        const index = order.indexOf(networkId);
+
         if (direction === 'up' && index > 0) {
             [order[index], order[index - 1]] = [order[index - 1], order[index]];
         } else if (direction === 'down' && index < order.length - 1) {
             [order[index], order[index + 1]] = [order[index + 1], order[index]];
+        } else if (direction === 'add') {
+            const networkId = order[index];
+            order.splice(index + 1, 0, networkId);
+        } else if (direction === 'remove') {
+            order.splice(index, 1);
         }
         updateOrderMenu(chatId, messageId, session);
     },
@@ -514,7 +523,7 @@ function sendSettingsMessage(chatId) {
     const inlineKeyboard = {
         reply_markup: {
             inline_keyboard: [
-                [{ text: '🕹 Участники', callback_data: 'menu_toggle' }, { text: '🔀 Порядок', callback_data: 'menu_order' }],
+                [{ text: '🕹 Участники', callback_data: 'menu_toggle' }, { text: '🔀 Порядок и Повторы', callback_data: 'menu_order' }],
                 [{ text: '🤖 AI-Модель', callback_data: 'menu_model' }, { text: '🌍 Язык', callback_data: 'menu_lang' }],
                 [{ text: '🧠 Мои Нейросети', callback_data: 'menu_custom' }],
                 [{ text: '🔧 Продвинутые настройки', callback_data: 'menu_advanced' }],
@@ -531,7 +540,8 @@ function updateToggleMenu(chatId, messageId, session) {
     
     const allNetworks = { ...networks, ...custom_networks };
     const buttons = Object.entries(allNetworks).filter(([id]) => id !== 'summarizer').map(([id, net]) => {
-        const status = enabled_networks.includes(id) ? '✅' : '❌';
+        const isEnabled = enabled_networks.includes(id);
+        const status = isEnabled ? '✅' : '❌';
         return { text: `${status} ${net.name}`, callback_data: `toggle_${id}` };
     });
 
@@ -549,20 +559,26 @@ function updateOrderMenu(chatId, messageId, session) {
     const { enabled_networks, custom_networks } = session.settings;
     const { networks } = session.networkManager;
 
-    if (enabled_networks.length < 2) {
-        bot.answerCallbackQuery(query.id, { text: 'Нужно включить хотя бы 2 сети для изменения порядка.', show_alert: true });
+    if (enabled_networks.length < 1) {
+        bot.answerCallbackQuery(query.id, { text: 'Сначала включите хотя бы одну нейросеть.', show_alert: true });
         return;
     }
 
     const keyboard = enabled_networks.map((networkId, index) => {
         const networkName = networks[networkId]?.name || custom_networks[networkId]?.name;
-        const upArrow = (index > 0) ? { text: '🔼', callback_data: `order_up_${networkId}` } : { text: ' ', callback_data: 'no_op' };
-        const downArrow = (index < enabled_networks.length - 1) ? { text: '🔽', callback_data: `order_down_${networkId}` } : { text: ' ', callback_data: 'no_op' };
-        return [upArrow, { text: networkName, callback_data: 'no_op' }, downArrow];
+        const upArrow = (index > 0) ? { text: '🔼', callback_data: `order_up_${index}` } : { text: ' ', callback_data: 'no_op' };
+        const downArrow = (index < enabled_networks.length - 1) ? { text: '🔽', callback_data: `order_down_${index}` } : { text: ' ', callback_data: 'no_op' };
+        return [
+            upArrow, 
+            { text: networkName, callback_data: 'no_op' }, 
+            downArrow,
+            { text: '➕', callback_data: `order_add_${index}` },
+            { text: '➖', callback_data: `order_remove_${index}` }
+        ];
     });
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
 
-    bot.editMessageText('*Измените порядок ответов нейросетей:*', {
+    bot.editMessageText('*Измените порядок и количество реплик:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     }).catch(() => {});
