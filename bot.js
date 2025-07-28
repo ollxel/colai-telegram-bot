@@ -1,3 +1,4 @@
+// --- ЗАВИСИМОСТИ ---
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
@@ -9,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// --- КОНФИГУРАЦИЯ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -17,17 +19,21 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
+// --- НОВОЕ: Проверенный и надежный список моделей ---
 const MODEL_MAP = {
+    // --- Надежные Рабочие Лошадки (Быстрые и всегда доступны) ---
     'Llama 3 8B': 'meta-llama/llama-3-8b-instruct:free',
     'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
     'Gemma 7B': 'google/gemma-7b-it:free',
     'Qwen 1.5 7B': 'qwen/qwen-1.5-7b-chat:free',
-    'Claude 3 Haiku': 'anthropic/claude-3-haiku:free',
+
+    // --- Мощные, но иногда могут быть недоступны ---
     'Llama 3 70B': 'meta-llama/llama-3-70b-instruct:free',
     'Mixtral 8x7B': 'mistralai/mixtral-8x7b-instruct:free',
-    'Nous Hermes 2': 'nousresearch/nous-hermes-2-mixtral-8x7b-dpo:free',
-    'Deepseek Coder': 'deepseek/deepseek-coder-6.7b-instruct',
-    'Code Llama 70B': 'meta-llama/codellama-70b-instruct:free'
+    'Claude 3 Haiku': 'anthropic/claude-3-haiku:free',
+
+    // --- Специализированные ---
+    'Code Llama 70B': 'meta-llama/codellama-70b-instruct:free' // Для задач по коду
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -38,6 +44,8 @@ const VOTE_KEYWORDS = {
     'French': { accept: 'accepter', reject: 'rejeter' },
     'Ukrainian': { accept: 'приймаю', reject: 'відхиляю' }
 };
+
+// --- КЛАССЫ ПРОЕКТА ---
 
 class NetworkManager {
     constructor() {
@@ -98,8 +106,11 @@ class NetworkManager {
                 );
                 return response.data.choices[0].message.content.trim();
             } catch (error) {
+                const errorData = error.response?.data?.error;
+                
+                // --- НОВОЕ: Умная обработка ошибок ---
                 if (error.response && error.response.status === 429) {
-                    const errorMessage = error.response.data.error.message;
+                    const errorMessage = errorData.message;
                     let waitTime = 20;
                     const match = errorMessage.match(/try again in ([\d.]+)s/i);
                     if (match && match[1]) waitTime = Math.ceil(parseFloat(match[1]));
@@ -110,9 +121,12 @@ class NetworkManager {
                     } else {
                         throw new Error(`Слишком много запросов к "${network.name}".`);
                     }
+                } else if (error.response && error.response.status === 404 && errorData.message.includes('No endpoints found')) {
+                    // Это ошибка "модель временно недоступна"
+                    throw new Error(`Модель "${settings.model}" временно недоступна на бесплатном тарифе. Пожалуйста, выберите другую модель в настройках.`);
                 } else {
                     console.error(`Ошибка API OpenRouter для "${network.name}":`, error.response ? error.response.data : error.message);
-                    const errorDetails = error.response?.data?.error?.message || "Неизвестная ошибка API.";
+                    const errorDetails = errorData?.message || "Неизвестная ошибка API.";
                     throw new Error(`Не удалось получить ответ от "${network.name}": ${errorDetails}`);
                 }
             }
@@ -302,6 +316,8 @@ class NeuralCollaborativeFramework {
         this.sendMessage(`*Итоговый результат коллаборации:*\n\n${finalOutput}`);
     }
 }
+
+// --- ЛОГИКА ТЕЛЕГРАМ БОТА ---
 
 if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
     console.error("КРИТИЧЕСКАЯ ОШИБКА: Токены не найдены в .env файле!");
@@ -642,7 +658,7 @@ const activeRequestHandlers = {
         const temp = parseFloat(text);
         if (isNaN(temp) || temp < 0.0 || temp > 2.0) {
             bot.sendMessage(chatId, '❌ Ошибка. Введите число от 0.0 до 2.0.');
-            return; // Оставляем запрос активным
+            return;
         }
         request.temp = temp;
         request.type = 'custom_network_tokens';
@@ -652,7 +668,7 @@ const activeRequestHandlers = {
         const tokens = parseInt(text, 10);
         if (isNaN(tokens) || tokens <= 0) {
             bot.sendMessage(chatId, '❌ Ошибка. Введите положительное целое число.');
-            return; // Оставляем запрос активным
+            return;
         }
         session.settings.custom_networks[request.id] = {
             name: request.name,
@@ -679,8 +695,7 @@ function handleActiveRequest(chatId, msg) {
 
     const handler = activeRequestHandlers[request.type];
     if (handler) {
-        // Запросы, которые не удаляются сразу, обрабатываются внутри
-        if (!['custom_network_name', 'custom_network_prompt', 'custom_network_temp', 'custom_network_tokens'].includes(request.type)) {
+        if (!request.type.startsWith('custom_network')) {
             delete activeRequests[chatId];
         }
         handler(session, text, chatId, request);
