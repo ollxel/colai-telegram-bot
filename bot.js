@@ -18,14 +18,13 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 const PORT = process.env.PORT || 3000;
 
 const MODEL_MAP = {
-    'Mistral 7B (Надежный)': 'mistralai/mistral-7b-instruct:free',
-    'Llama 3 8B (Быстрый)': 'meta-llama/llama-3-8b-instruct:free',
-    'Gemma 7B (от Google)': 'google/gemma-7b-it:free',
-    'Qwen 1.5 7B (Хороший)': 'qwen/qwen-1.5-7b-chat:free',
-    'Llama 3 70B (Мощный)': 'meta-llama/llama-3-70b-instruct:free',
-    'Mixtral 8x7B (Большой)': 'mistralai/mixtral-8x7b-instruct:free',
-    'Claude 3 Haiku': 'anthropic/claude-3-haiku:free',
-    'Code Llama 70B (Кодер)': 'meta-llama/codellama-70b-instruct:free'
+    'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
+    'Gemma 7B': 'google/gemma-7b-it:free',
+    'Llama 3 8B': 'meta-llama/llama-3-8b-instruct:free',
+    'Deepseek Chat': 'deepseek/deepseek-chat',
+    'Qwen 1.5 7B Chat': 'qwen/qwen-1.5-7b-chat:free',
+    'Kimi K2 (Moonshot)': 'moonshot-ai/moonshot-v1-128k',
+    'Venice Uncensored': 'cognitivecomputations/dolphin-mixtral-8x7b:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
