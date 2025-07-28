@@ -1,4 +1,3 @@
-// --- ЗАВИСИМОСТИ ---
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
@@ -10,7 +9,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// --- КОНФИГУРАЦИЯ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -19,21 +17,15 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
-// --- НОВОЕ: Проверенный и надежный список моделей ---
 const MODEL_MAP = {
-    // --- Надежные Рабочие Лошадки (Быстрые и всегда доступны) ---
-    'Llama 3 8B': 'meta-llama/llama-3-8b-instruct:free',
-    'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
-    'Gemma 7B': 'google/gemma-7b-it:free',
-    'Qwen 1.5 7B': 'qwen/qwen-1.5-7b-chat:free',
-
-    // --- Мощные, но иногда могут быть недоступны ---
-    'Llama 3 70B': 'meta-llama/llama-3-70b-instruct:free',
-    'Mixtral 8x7B': 'mistralai/mixtral-8x7b-instruct:free',
-    'Claude 3 Haiku': 'anthropic/claude-3-haiku:free',
-
-    // --- Специализированные ---
-    'Code Llama 70B': 'meta-llama/codellama-70b-instruct:free' // Для задач по коду
+    'Llama 3 8B (Быстрый)': 'meta-llama/llama-3-8b-instruct:free',
+    'Mistral 7B (Надежный)': 'mistralai/mistral-7b-instruct:free',
+    'Deepseek Chat (Умный)': 'deepseek/deepseek-chat',
+    'Qwen 1.5 7B (Хороший)': 'qwen/qwen-1.5-7b-chat:free',
+    'Gemma 7B (от Google)': 'google/gemma-7b-it:free',
+    'Llama 3 70B (Мощный)': 'meta-llama/llama-3-70b-instruct:free',
+    'Mixtral 8x7B (Большой)': 'mistralai/mixtral-8x7b-instruct:free',
+    'Code Llama 70B (Кодер)': 'meta-llama/codellama-70b-instruct:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -44,8 +36,6 @@ const VOTE_KEYWORDS = {
     'French': { accept: 'accepter', reject: 'rejeter' },
     'Ukrainian': { accept: 'приймаю', reject: 'відхиляю' }
 };
-
-// --- КЛАССЫ ПРОЕКТА ---
 
 class NetworkManager {
     constructor() {
@@ -108,7 +98,6 @@ class NetworkManager {
             } catch (error) {
                 const errorData = error.response?.data?.error;
                 
-                // --- НОВОЕ: Умная обработка ошибок ---
                 if (error.response && error.response.status === 429) {
                     const errorMessage = errorData.message;
                     let waitTime = 20;
@@ -121,8 +110,7 @@ class NetworkManager {
                     } else {
                         throw new Error(`Слишком много запросов к "${network.name}".`);
                     }
-                } else if (error.response && error.response.status === 404 && errorData.message.includes('No endpoints found')) {
-                    // Это ошибка "модель временно недоступна"
+                } else if (error.response && errorData && errorData.message && errorData.message.includes('No endpoints found')) {
                     throw new Error(`Модель "${settings.model}" временно недоступна на бесплатном тарифе. Пожалуйста, выберите другую модель в настройках.`);
                 } else {
                     console.error(`Ошибка API OpenRouter для "${network.name}":`, error.response ? error.response.data : error.message);
@@ -159,7 +147,7 @@ class NeuralCollaborativeFramework {
 
     initializeSettings() {
         this.settings = {
-            model: 'Llama 3 8B',
+            model: 'Llama 3 8B (Быстрый)',
             temperature: 0.7,
             max_tokens: 1024,
             discussion_language: 'Russian',
@@ -316,8 +304,6 @@ class NeuralCollaborativeFramework {
         this.sendMessage(`*Итоговый результат коллаборации:*\n\n${finalOutput}`);
     }
 }
-
-// --- ЛОГИКА ТЕЛЕГРАМ БОТА ---
 
 if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
     console.error("КРИТИЧЕСКАЯ ОШИБКА: Токены не найдены в .env файле!");
