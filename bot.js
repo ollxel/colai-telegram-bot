@@ -1,4 +1,3 @@
-// --- ЗАВИСИМОСТИ ---
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
@@ -10,7 +9,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// --- КОНФИГУРАЦИЯ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -19,18 +17,17 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
-// --- НОВОЕ: Карта моделей на OpenRouter ---
 const MODEL_MAP = {
-    'Llama 3 8B': 'meta-llama/llama-3-8b-instruct',
-    'Mistral 7B': 'mistralai/mistral-7b-instruct',
-    'Qwen 7B Chat': 'qwen/qwen-7b-chat',
-    'Gemma 7B': 'google/gemma-7b-it',
+    'Llama 3 8B': 'meta-llama/llama-3-8b-instruct:free',
+    'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
+    'Gemma 7B': 'google/gemma-7b-it:free',
+    'Qwen 1.5 7B': 'qwen/qwen-1.5-7b-chat:free',
+    'Claude 3 Haiku': 'anthropic/claude-3-haiku:free',
+    'Llama 3 70B': 'meta-llama/llama-3-70b-instruct:free',
+    'Mixtral 8x7B': 'mistralai/mixtral-8x7b-instruct:free',
+    'Nous Hermes 2': 'nousresearch/nous-hermes-2-mixtral-8x7b-dpo:free',
     'Deepseek Coder': 'deepseek/deepseek-coder-6.7b-instruct',
-    'Nous Hermes 2': 'nousresearch/nous-hermes-2-mixtral-8x7b-dpo',
-    'Llama 3 70B': 'meta-llama/llama-3-70b-instruct',
-    'Claude 3 Haiku': 'anthropic/claude-3-haiku',
-    'GPT-3.5 Turbo': 'openai/gpt-3.5-turbo',
-    'Zephyr 7B': 'huggingfaceh4/zephyr-7b-beta'
+    'Code Llama 70B': 'meta-llama/codellama-70b-instruct:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -41,8 +38,6 @@ const VOTE_KEYWORDS = {
     'French': { accept: 'accepter', reject: 'rejeter' },
     'Ukrainian': { accept: 'приймаю', reject: 'відхиляю' }
 };
-
-// --- КЛАССЫ ПРОЕКТА ---
 
 class NetworkManager {
     constructor() {
@@ -67,6 +62,7 @@ class NetworkManager {
         systemPrompt += `\n\nIMPORTANT INSTRUCTION: You MUST respond ONLY in ${settings.discussion_language}. Do not use any other language.`;
         
         const temp = settings.custom_networks[networkId]?.temperature || settings.temperature;
+        
         const modelContextLimit = 8192;
         const promptTokens = Math.ceil(prompt.length / 3.5); 
         const availableTokensForResponse = modelContextLimit - promptTokens - 200; 
@@ -80,29 +76,46 @@ class NetworkManager {
             availableTokensForResponse
         );
 
-        try {
-            await new Promise(resolve => setTimeout(resolve, 500)); // Небольшая задержка для профилактики
-            const response = await axios.post(
-                OPENROUTER_API_URL,
-                {
-                    model: MODEL_MAP[settings.model], // Используем полное имя модели
-                    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: prompt }],
-                    temperature: temp,
-                    max_tokens: finalMaxTokens,
-                },
-                { 
-                    headers: { 
-                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                        'HTTP-Referer': 'https://github.com/ollxel/neural-collab-bot', // Рекомендовано OpenRouter
-                        'X-Title': 'Neural Collab Bot' // Рекомендовано OpenRouter
-                    } 
+        const maxRetries = 3;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const response = await axios.post(
+                    OPENROUTER_API_URL,
+                    {
+                        model: MODEL_MAP[settings.model],
+                        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: prompt }],
+                        temperature: temp,
+                        max_tokens: finalMaxTokens,
+                    },
+                    { 
+                        headers: { 
+                            'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                            'HTTP-Referer': 'https://github.com/ollxel/neural-collab-bot',
+                            'X-Title': 'Neural Collab Bot'
+                        } 
+                    }
+                );
+                return response.data.choices[0].message.content.trim();
+            } catch (error) {
+                if (error.response && error.response.status === 429) {
+                    const errorMessage = error.response.data.error.message;
+                    let waitTime = 20;
+                    const match = errorMessage.match(/try again in ([\d.]+)s/i);
+                    if (match && match[1]) waitTime = Math.ceil(parseFloat(match[1]));
+                    if (sendMessageCallback) sendMessageCallback(`⏳ _Достигнут лимит API, жду ${waitTime} секунд..._`);
+                    if (attempt < maxRetries) {
+                        await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+                        continue;
+                    } else {
+                        throw new Error(`Слишком много запросов к "${network.name}".`);
+                    }
+                } else {
+                    console.error(`Ошибка API OpenRouter для "${network.name}":`, error.response ? error.response.data : error.message);
+                    const errorDetails = error.response?.data?.error?.message || "Неизвестная ошибка API.";
+                    throw new Error(`Не удалось получить ответ от "${network.name}": ${errorDetails}`);
                 }
-            );
-            return response.data.choices[0].message.content.trim();
-        } catch (error) {
-            console.error(`Ошибка API OpenRouter для "${network.name}":`, error.response ? error.response.data : error.message);
-            const errorDetails = error.response?.data?.error?.message || "Неизвестная ошибка API.";
-            throw new Error(`Не удалось получить ответ от "${network.name}": ${errorDetails}`);
+            }
         }
     }
 
@@ -132,7 +145,7 @@ class NeuralCollaborativeFramework {
 
     initializeSettings() {
         this.settings = {
-            model: 'Llama 3 8B', // Используем короткое имя для настроек
+            model: 'Llama 3 8B',
             temperature: 0.7,
             max_tokens: 1024,
             discussion_language: 'Russian',
@@ -290,10 +303,8 @@ class NeuralCollaborativeFramework {
     }
 }
 
-// --- ЛОГИКА ТЕЛЕГРАМ БОТА ---
-
 if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
-    console.error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN или OPENROUTER_API_KEY не найдены в .env файле!");
+    console.error("КРИТИЧЕСКАЯ ОШИБКА: Токены не найдены в .env файле!");
     process.exit(1);
 }
 
@@ -345,7 +356,6 @@ bot.on('message', (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
-    // --- ИСПРАВЛЕНО: Обработка файлов идет в первую очередь ---
     if (msg.photo || msg.document) {
         const session = getOrCreateSession(chatId);
         const file = msg.document || msg.photo[msg.photo.length - 1];
@@ -356,7 +366,6 @@ bot.on('message', (msg) => {
             mime_type: msg.document?.mime_type || 'image/jpeg'
         });
         bot.sendMessage(chatId, `✅ Файл "${fileName}" добавлен и будет использован в следующем обсуждении.`);
-        // Если мы ждали тему, отменяем ожидание, так как получили файл
         if (activeRequests[chatId]?.type === 'topic') {
             delete activeRequests[chatId];
         }
@@ -396,6 +405,90 @@ bot.onText(/\/stop/, (msg) => {
     }
 });
 
+const callbackQueryHandlers = {
+    toggle: (session, value, chatId, messageId) => {
+        const enabled = session.settings.enabled_networks;
+        if (enabled.includes(value)) {
+            session.settings.enabled_networks = enabled.filter(id => id !== value);
+        } else {
+            enabled.push(value);
+        }
+        updateToggleMenu(chatId, messageId, session);
+    },
+    setmodel: (session, value, chatId, messageId) => {
+        session.settings.model = value;
+        updateModelMenu(chatId, messageId, session);
+    },
+    setlang: (session, value, chatId, messageId) => {
+        session.settings.discussion_language = value;
+        updateLangMenu(chatId, messageId, session);
+    },
+    setiterations: (session, value, chatId, messageId) => {
+        session.settings.iteration_count = parseInt(value, 10);
+        updateAdvancedMenu(chatId, messageId, session);
+    },
+    promptfor: (session, value, chatId, messageId) => {
+        const networkName = session.networkManager.networks[value]?.name || session.settings.custom_networks[value]?.name;
+        bot.sendMessage(chatId, `Пришлите следующим сообщением новый системный промпт для "${networkName}":`);
+        activeRequests[chatId] = { type: 'system_prompt', networkId: value };
+        bot.deleteMessage(chatId, messageId);
+    },
+    settemp: (session, value, chatId, messageId) => {
+        bot.sendMessage(chatId, `Пришлите следующим сообщением новое значение температуры (число от 0.0 до 2.0):`);
+        activeRequests[chatId] = { type: 'temperature' };
+        bot.deleteMessage(chatId, messageId);
+    },
+    settokens: (session, value, chatId, messageId) => {
+        bot.sendMessage(chatId, `Пришлите следующим сообщением новый лимит токенов (число от 1 до 8192):`);
+        activeRequests[chatId] = { type: 'max_tokens' };
+        bot.deleteMessage(chatId, messageId);
+    },
+    menu: (session, value, chatId, messageId) => {
+        const menuActions = {
+            'toggle': updateToggleMenu,
+            'model': updateModelMenu,
+            'lang': updateLangMenu,
+            'advanced': updateAdvancedMenu,
+            'prompts': updatePromptsMenu,
+            'custom': updateCustomNetworksMenu,
+            'createnew': (chatId, messageId, session) => {
+                if (Object.keys(session.settings.custom_networks).length >= 10) {
+                    bot.sendMessage(chatId, "❌ Достигнут лимит в 10 кастомных нейросетей.");
+                } else {
+                    bot.sendMessage(chatId, "Введите имя для вашей новой нейросети:");
+                    activeRequests[chatId] = { type: 'custom_network_name' };
+                    bot.deleteMessage(chatId, messageId);
+                }
+            }
+        };
+        if (menuActions[value]) menuActions[value](chatId, messageId, session);
+    },
+    back: (session, value, chatId, messageId) => {
+        bot.deleteMessage(chatId, messageId);
+        if (value === 'settings') sendSettingsMessage(chatId);
+        if (value === 'advanced') updateAdvancedMenu(chatId, messageId, session);
+    },
+    close: (session, value, chatId, messageId) => {
+        bot.deleteMessage(chatId, messageId);
+    }
+};
+
+bot.on('callback_query', (query) => {
+    const { message, data } = query;
+    const chatId = message.chat.id;
+    const messageId = message.message_id;
+    const session = getOrCreateSession(chatId);
+
+    bot.answerCallbackQuery(query.id);
+
+    const action = data.split('_')[0];
+    const value = data.substring(action.length + 1);
+
+    if (callbackQueryHandlers[action]) {
+        callbackQueryHandlers[action](session, value, chatId, messageId);
+    }
+});
+
 function sendSettingsMessage(chatId) {
     const session = getOrCreateSession(chatId);
     const s = session.settings;
@@ -418,85 +511,6 @@ function sendSettingsMessage(chatId) {
     };
     bot.sendMessage(chatId, settingsText, { ...inlineKeyboard, parse_mode: 'Markdown' });
 }
-
-bot.on('callback_query', (query) => {
-    const chatId = query.message.chat.id;
-    const messageId = query.message.message_id;
-    const data = query.data;
-    const session = getOrCreateSession(chatId);
-
-    bot.answerCallbackQuery(query.id);
-
-    const action = data.split('_')[0];
-    const value = data.substring(action.length + 1);
-
-    switch (action) {
-        case 'toggle':
-            const enabled = session.settings.enabled_networks;
-            if (enabled.includes(value)) {
-                session.settings.enabled_networks = enabled.filter(id => id !== value);
-            } else {
-                enabled.push(value);
-            }
-            updateToggleMenu(chatId, messageId, session);
-            break;
-        case 'setmodel':
-            session.settings.model = value;
-            updateModelMenu(chatId, messageId, session);
-            break;
-        case 'setlang':
-            session.settings.discussion_language = value;
-            updateLangMenu(chatId, messageId, session);
-            break;
-        case 'setiterations':
-            session.settings.iteration_count = parseInt(value, 10);
-            updateAdvancedMenu(chatId, messageId, session);
-            break;
-        case 'promptfor':
-            const networkName = session.networkManager.networks[value]?.name || session.settings.custom_networks[value]?.name;
-            bot.sendMessage(chatId, `Пришлите следующим сообщением новый системный промпт для "${networkName}":`);
-            activeRequests[chatId] = { type: 'system_prompt', networkId: value };
-            bot.deleteMessage(chatId, messageId);
-            break;
-        case 'settemp':
-            bot.sendMessage(chatId, `Пришлите следующим сообщением новое значение температуры (число от 0.0 до 2.0):`);
-            activeRequests[chatId] = { type: 'temperature' };
-            bot.deleteMessage(chatId, messageId);
-            break;
-        case 'settokens':
-            bot.sendMessage(chatId, `Пришлите следующим сообщением новый лимит токенов (число от 1 до 8192):`);
-            activeRequests[chatId] = { type: 'max_tokens' };
-            bot.deleteMessage(chatId, messageId);
-            break;
-        case 'menu':
-            switch (value) {
-                case 'toggle': updateToggleMenu(chatId, messageId, session); break;
-                case 'model': updateModelMenu(chatId, messageId, session); break;
-                case 'lang': updateLangMenu(chatId, messageId, session); break;
-                case 'advanced': updateAdvancedMenu(chatId, messageId, session); break;
-                case 'prompts': updatePromptsMenu(chatId, messageId, session); break;
-                case 'custom': updateCustomNetworksMenu(chatId, messageId, session); break;
-                case 'createnew':
-                    if (Object.keys(session.settings.custom_networks).length >= 10) {
-                        bot.sendMessage(chatId, "❌ Достигнут лимит в 10 кастомных нейросетей.");
-                    } else {
-                        bot.sendMessage(chatId, "Введите имя для вашей новой нейросети:");
-                        activeRequests[chatId] = { type: 'custom_network_name' };
-                        bot.deleteMessage(chatId, messageId);
-                    }
-                    break;
-            }
-            break;
-        case 'back':
-            bot.deleteMessage(chatId, messageId);
-            if (value === 'settings') sendSettingsMessage(chatId);
-            if (value === 'advanced') updateAdvancedMenu(chatId, messageId, session);
-            break;
-        case 'close':
-            bot.deleteMessage(chatId, messageId);
-            break;
-    }
-});
 
 function updateToggleMenu(chatId, messageId, session) {
     const { enabled_networks, custom_networks } = session.settings;
@@ -584,6 +598,75 @@ function updateCustomNetworksMenu(chatId, messageId, session) {
     }).catch(() => {});
 }
 
+const activeRequestHandlers = {
+    'topic': (session, text) => {
+        session.startCollaboration(text);
+    },
+    'temperature': (session, text, chatId) => {
+        const temp = parseFloat(text);
+        if (!isNaN(temp) && temp >= 0.0 && temp <= 2.0) {
+            session.settings.temperature = temp;
+            bot.sendMessage(chatId, `✅ Температура установлена на: \`${temp}\``, { parse_mode: 'Markdown' });
+        } else {
+            bot.sendMessage(chatId, '❌ Ошибка. Введите число от 0.0 до 2.0.');
+        }
+        sendSettingsMessage(chatId);
+    },
+    'max_tokens': (session, text, chatId) => {
+        const tokens = parseInt(text, 10);
+        if (!isNaN(tokens) && tokens > 0 && tokens <= 8192) {
+            session.settings.max_tokens = tokens;
+            bot.sendMessage(chatId, `✅ Лимит токенов установлен на: \`${tokens}\``, { parse_mode: 'Markdown' });
+        } else {
+            bot.sendMessage(chatId, '❌ Ошибка. Введите целое число от 1 до 8192.');
+        }
+        sendSettingsMessage(chatId);
+    },
+    'system_prompt': (session, text, chatId, request) => {
+        session.settings.system_prompts[request.networkId] = text;
+        const networkName = session.networkManager.networks[request.networkId]?.name || session.settings.custom_networks[request.networkId]?.name;
+        bot.sendMessage(chatId, `✅ Системный промпт для "${networkName}" обновлен.`);
+        sendSettingsMessage(chatId);
+    },
+    'custom_network_name': (session, text, chatId) => {
+        const newId = `custom${Date.now()}`;
+        activeRequests[chatId] = { type: 'custom_network_prompt', id: newId, name: text };
+        bot.sendMessage(chatId, `Отлично! Теперь введите системный промпт (личность) для "${text}":`);
+    },
+    'custom_network_prompt': (session, text, chatId, request) => {
+        request.prompt = text;
+        request.type = 'custom_network_temp';
+        bot.sendMessage(chatId, `Принято. Теперь введите температуру (креативность) для этой нейросети (например, 0.7):`);
+    },
+    'custom_network_temp': (session, text, chatId, request) => {
+        const temp = parseFloat(text);
+        if (isNaN(temp) || temp < 0.0 || temp > 2.0) {
+            bot.sendMessage(chatId, '❌ Ошибка. Введите число от 0.0 до 2.0.');
+            return; // Оставляем запрос активным
+        }
+        request.temp = temp;
+        request.type = 'custom_network_tokens';
+        bot.sendMessage(chatId, `Понял. И последнее: введите лимит токенов (длину ответа), например, 1024:`);
+    },
+    'custom_network_tokens': (session, text, chatId, request) => {
+        const tokens = parseInt(text, 10);
+        if (isNaN(tokens) || tokens <= 0) {
+            bot.sendMessage(chatId, '❌ Ошибка. Введите положительное целое число.');
+            return; // Оставляем запрос активным
+        }
+        session.settings.custom_networks[request.id] = {
+            name: request.name,
+            short_name: request.name.toLowerCase().replace(/\s/g, '').substring(0, 8),
+            system_prompt: request.prompt,
+            temperature: request.temp,
+            max_tokens: tokens
+        };
+        bot.sendMessage(chatId, `✅ Новая нейросеть "${request.name}" успешно создана!`);
+        delete activeRequests[chatId];
+        sendSettingsMessage(chatId);
+    }
+};
+
 function handleActiveRequest(chatId, msg) {
     const request = activeRequests[chatId];
     const session = getOrCreateSession(chatId);
@@ -594,84 +677,18 @@ function handleActiveRequest(chatId, msg) {
         return;
     }
 
-    switch (request.type) {
-        case 'topic':
+    const handler = activeRequestHandlers[request.type];
+    if (handler) {
+        // Запросы, которые не удаляются сразу, обрабатываются внутри
+        if (!['custom_network_name', 'custom_network_prompt', 'custom_network_temp', 'custom_network_tokens'].includes(request.type)) {
             delete activeRequests[chatId];
-            session.startCollaboration(text);
-            break;
-        case 'temperature':
-            const temp = parseFloat(text);
-            if (!isNaN(temp) && temp >= 0.0 && temp <= 2.0) {
-                session.settings.temperature = temp;
-                bot.sendMessage(chatId, `✅ Температура установлена на: \`${temp}\``, { parse_mode: 'Markdown' });
-            } else {
-                bot.sendMessage(chatId, '❌ Ошибка. Введите число от 0.0 до 2.0.');
-            }
-            delete activeRequests[chatId];
-            sendSettingsMessage(chatId);
-            break;
-        case 'max_tokens':
-            const tokens = parseInt(text, 10);
-            if (!isNaN(tokens) && tokens > 0 && tokens <= 8192) {
-                session.settings.max_tokens = tokens;
-                bot.sendMessage(chatId, `✅ Лимит токенов установлен на: \`${tokens}\``, { parse_mode: 'Markdown' });
-            } else {
-                bot.sendMessage(chatId, '❌ Ошибка. Введите целое число от 1 до 8192.');
-            }
-            delete activeRequests[chatId];
-            sendSettingsMessage(chatId);
-            break;
-        case 'system_prompt':
-            session.settings.system_prompts[request.networkId] = text;
-            const networkName = session.networkManager.networks[request.networkId]?.name || session.settings.custom_networks[request.networkId]?.name;
-            bot.sendMessage(chatId, `✅ Системный промпт для "${networkName}" обновлен.`);
-            delete activeRequests[chatId];
-            sendSettingsMessage(chatId);
-            break;
-        case 'custom_network_name':
-            const newId = `custom${Date.now()}`;
-            activeRequests[chatId] = { type: 'custom_network_prompt', id: newId, name: text };
-            bot.sendMessage(chatId, `Отлично! Теперь введите системный промпт (личность) для "${text}":`);
-            break;
-        case 'custom_network_prompt':
-            activeRequests[chatId].prompt = text;
-            bot.sendMessage(chatId, `Принято. Теперь введите температуру (креативность) для этой нейросети (например, 0.7):`);
-            activeRequests[chatId].type = 'custom_network_temp';
-            break;
-        case 'custom_network_temp':
-            const customTemp = parseFloat(text);
-            if (isNaN(customTemp) || customTemp < 0.0 || customTemp > 2.0) {
-                bot.sendMessage(chatId, '❌ Ошибка. Введите число от 0.0 до 2.0.');
-                return;
-            }
-            activeRequests[chatId].temp = customTemp;
-            bot.sendMessage(chatId, `Понял. И последнее: введите лимит токенов (длину ответа), например, 1024:`);
-            activeRequests[chatId].type = 'custom_network_tokens';
-            break;
-        case 'custom_network_tokens':
-            const customTokens = parseInt(text, 10);
-            if (isNaN(customTokens) || customTokens <= 0) {
-                bot.sendMessage(chatId, '❌ Ошибка. Введите положительное целое число.');
-                return;
-            }
-            const finalData = activeRequests[chatId];
-            session.settings.custom_networks[finalData.id] = {
-                name: finalData.name,
-                short_name: finalData.name.toLowerCase().replace(/\s/g, '').substring(0, 8),
-                system_prompt: finalData.prompt,
-                temperature: finalData.temp,
-                max_tokens: customTokens
-            };
-            bot.sendMessage(chatId, `✅ Новая нейросеть "${finalData.name}" успешно создана!`);
-            delete activeRequests[chatId];
-            sendSettingsMessage(chatId);
-            break;
+        }
+        handler(session, text, chatId, request);
     }
 }
 
 bot.on('polling_error', (error) => console.log(`Ошибка Polling: ${error.message}`));
 
-// --- ВЕБ-СЕРВЕР ДЛЯ RENDER.COM ---
 const app = express();
 app.get('/', (req, res) => res.send('Бот жив и здоров!'));
 app.listen(PORT, () => console.log(`Веб-сервер для проверки здоровья запущен на порту ${PORT}`));
