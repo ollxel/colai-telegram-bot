@@ -18,14 +18,16 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 const PORT = process.env.PORT || 3000;
 
 const MODEL_MAP = {
-    'Llama 3 8B (Быстрый)': 'meta-llama/llama-3-8b-instruct:free',
-    'Mistral 7B (Надежный)': 'mistralai/mistral-7b-instruct:free',
-    'Deepseek Chat (Умный)': 'deepseek/deepseek-chat',
-    'Qwen 1.5 7B (Хороший)': 'qwen/qwen-1.5-7b-chat:free',
-    'Gemma 7B (от Google)': 'google/gemma-7b-it:free',
-    'Llama 3 70B (Мощный)': 'meta-llama/llama-3-70b-instruct:free',
-    'Mixtral 8x7B (Большой)': 'mistralai/mixtral-8x7b-instruct:free',
-    'Code Llama 70B (Кодер)': 'meta-llama/codellama-70b-instruct:free'
+    'Deepseek R1 Distill Llama 70B': 'deepseek/deepseek-r1-distill-llama-70b:free',
+    'Mistral 7B': 'mistralai/mistral-7b-instruct',
+    'Qwen3 Coder': 'qwen/qwen3-coder:free',
+    'Gemma 7B': 'google/gemma-7b-it',
+    'Deepseek R1 Qwen3 8b': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
+    'Deepseek R1': 'deepseek/deepseek-r1:free',
+    'Llama 3.2 3B ': 'meta-llama/llama-3.2-3b-instruct:free',    
+    'Gemini 2.5 Pro': 'google/gemini-2.5-pro-exp-03-25',
+    'Kimi K2': 'moonshotai/kimi-k2:free',
+    'Venice Uncensored': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
