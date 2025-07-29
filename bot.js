@@ -21,7 +21,7 @@ const MODEL_MAP = {
     'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
     'Llama 3 8B': 'meta-llama/llama-3-8b-instruct:free',
     'Deepseek Chat': 'deepseek/deepseek-chat',
-    'Qwen 2.5 72B: 'qwen/qwen-2.5-72b-instruct:free',
+    'QwQ 32B': 'qwen/qwq-32b:free',
     'Kimi K2': 'moonshotai/kimi-k2:free',
     'Venice Uncensored': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
 };
