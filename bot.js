@@ -19,15 +19,15 @@ const PORT = process.env.PORT || 3000;
 
 const MODEL_MAP = {
     'Deepseek R1 Distill Llama 70B': 'deepseek/deepseek-r1-distill-llama-70b:free',
-    'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
-    'Qwen3 Coder': 'qwen/qwen-1.5-7b-chat:free',
-    'Gemma 7B': 'google/gemma-7b-it:free',
+    'Mistral 7B': 'mistralai/mistral-7b-instruct',
+    'Qwen3 Coder': 'qwen/qwen3-coder:free',
+    'Gemma 7B': 'google/gemma-7b-it',
     'Deepseek R1 Qwen3 8b': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
-    'Deepseek R1': 'deepseek/deepseek-chat',
-    'Llama 3.1 8B': 'meta-llama/llama-3.1-8b-instruct:free',
-    'Gemini Flash 1.5': 'google/gemini-flash-1.5',
-    'Kimi K2': 'moonshot-ai/moonshot-v1-128k',
-    'Venice Uncensored': 'cognitivecomputations/dolphin-mixtral-8x7b:free'
+    'Deepseek R1': 'deepseek/deepseek-r1:free',
+    'Llama 3.2 3B ': 'meta-llama/llama-3.2-3b-instruct:free',    
+    'Gemini 2.5 Pro': 'google/gemini-2.5-pro-exp-03-25',
+    'Kimi K2': 'moonshotai/kimi-k2:free',
+    'Venice Uncensored': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -181,7 +181,7 @@ class NeuralCollaborativeFramework {
         this.isWorking = true;
         this.projectDescription = topic;
 
-        this.sendMessage(`*Начинаю коллаборацию на тему:* "${topic}"\n\n_Чтобы остановить, используйте команду /stop_`);
+        await this.sendMessage(`*Начинаю коллаборацию на тему:* "${topic}"\n\n_Чтобы остановить, используйте команду /stop_`);
 
         try {
             let fileContext = await this.processStagedFiles();
@@ -191,7 +191,7 @@ class NeuralCollaborativeFramework {
             if (this.isWorking) await this.finalizeDevelopment();
         } catch (error) {
             console.error(error);
-            this.sendMessage(`❗️*Произошла ошибка:* ${error.message}`);
+            await this.sendMessage(`❗️*Произошла ошибка:* ${error.message}`);
         } finally {
             this.isWorking = false;
         }
@@ -200,7 +200,7 @@ class NeuralCollaborativeFramework {
     async processStagedFiles() {
         if (this.settings.staged_files.length === 0) return "";
 
-        this.sendMessage("📎 _Обрабатываю прикрепленные файлы..._");
+        await this.sendMessage("📎 _Обрабатываю прикрепленные файлы..._");
         let context = "\n\n--- ATTACHED FILE CONTEXT ---\n";
         for (const file of this.settings.staged_files) {
             try {
@@ -232,14 +232,14 @@ class NeuralCollaborativeFramework {
 
     async runDiscussionLoop(fileContext) {
         while (this.iterations < this.settings.iteration_count) {
-            if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
+            if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
             this.iterations++;
             await this.sendMessage(`\n\n--- 💬 *Итерация ${this.iterations} из ${this.settings.iteration_count}* ---\n`);
             
             let iterationHistory = "";
 
             for (const networkId of this.settings.enabled_networks) {
-                if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
+                if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
                 const networkName = this.networkManager.networks[networkId]?.name || this.settings.custom_networks[networkId]?.name;
                 
                 let prompt = `Main Topic: "${this.projectDescription}"\n\n`;
@@ -251,18 +251,18 @@ class NeuralCollaborativeFramework {
 
                 await this.sendMessage(`🤔 _${networkName} думает..._`);
                 const response = await this.networkManager.generateResponse(networkId, prompt, this.settings);
-                if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
+                if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
                 await this.sendMessage(`*${networkName}:*\n${response}`);
                 
                 iterationHistory += `\n\n**${networkName} said:**\n${response}`;
                 await new Promise(resolve => setTimeout(resolve, 3000));
             }
 
-            if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
+            if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
             await this.sendMessage(`📝 _Синтезатор анализирует..._`);
             const summaryPrompt = `Please create a concise summary of the key points from the following discussion:\n\n${iterationHistory}`;
             const summary = await this.networkManager.generateResponse('summarizer', summaryPrompt, this.settings);
-            if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
+            if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
             await this.sendMessage(`*Сводка итерации ${this.iterations}:*\n${summary}`);
             
             await this.sendMessage(`🗳️ _Проводим голосование по сводке..._`);
@@ -273,11 +273,11 @@ class NeuralCollaborativeFramework {
             const acceptRegex = new RegExp(`^${keywords.accept}`, 'i');
 
             for (const networkId of this.settings.enabled_networks) {
-                if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
+                if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
                 const networkName = this.networkManager.networks[networkId]?.name || this.settings.custom_networks[networkId]?.name;
                 const votePrompt = `Here is the discussion summary to vote on:\n"${summary}"\n\nAs the ${networkName}, do you accept this summary? Respond with ONLY the word "${keywords.accept}" or "${keywords.reject}" in ${this.settings.discussion_language}, followed by a brief reason.`;
                 const voteResponse = await this.networkManager.generateResponse(networkId, votePrompt, this.settings);
-                if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
+                if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
                 await this.sendMessage(`*${networkName} голосует:*\n${voteResponse}`);
                 
                 if (acceptRegex.test(voteResponse)) votesFor++; else votesAgainst++;
@@ -321,11 +321,22 @@ bot.setMyCommands([
     { command: '/reset', description: '🗑 Сбросить обсуждение и настройки' },
 ]);
 
+async function sendLongMessage(chatId, text) {
+    const maxLength = 4096;
+    if (text.length <= maxLength) {
+        return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, text));
+    }
+
+    const chunks = text.match(new RegExp(`.{1,${maxLength}}`, 'g'));
+    for (const chunk of chunks) {
+        await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, chunk));
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+}
+
 function getOrCreateSession(chatId) {
     if (!chatSessions[chatId]) {
-        chatSessions[chatId] = new NeuralCollaborativeFramework((text) => {
-            return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, text));
-        });
+        chatSessions[chatId] = new NeuralCollaborativeFramework((text) => sendLongMessage(chatId, text));
     }
     return chatSessions[chatId];
 }
