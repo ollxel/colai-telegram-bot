@@ -19,12 +19,12 @@ const PORT = process.env.PORT || 3000;
 
 const MODEL_MAP = {
     'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
-    'Gemma 7B': 'google/gemma-7b-it:free',
+    'Gemma 3 27B': 'google/gemma-3-27b-it:free
     'Llama 3 8B': 'meta-llama/llama-3-8b-instruct:free',
     'Deepseek Chat': 'deepseek/deepseek-chat',
-    'Qwen 1.5 7B Chat': 'qwen/qwen-1.5-7b-chat:free',
-    'Kimi K2 (Moonshot)': 'moonshot-ai/moonshot-v1-128k',
-    'Venice Uncensored': 'cognitivecomputations/dolphin-mixtral-8x7b:free'
+    'Qwen 2.5 72B: 'qwen/qwen-2.5-72b-instruct:free',
+    'Kimi K2': 'moonshotai/kimi-k2:free',
+    'Venice Uncensored': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
