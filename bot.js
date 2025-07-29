@@ -19,15 +19,15 @@ const PORT = process.env.PORT || 3000;
 
 const MODEL_MAP = {
     'Deepseek R1 Distill Llama 70B': 'deepseek/deepseek-r1-distill-llama-70b:free',
-    'Mistral 7B': 'mistralai/mistral-7b-instruct',
-    'Qwen3 Coder': 'qwen/qwen3-coder:free',
-    'Gemma 7B': 'google/gemma-7b-it',
+    'Mistral 7B': 'mistralai/mistral-7b-instruct:free',
+    'Qwen3 Coder': 'qwen/qwen-1.5-7b-chat:free',
+    'Gemma 7B': 'google/gemma-7b-it:free',
     'Deepseek R1 Qwen3 8b': 'deepseek/deepseek-r1-0528-qwen3-8b:free',
-    'Deepseek R1': 'deepseek/deepseek-r1:free',
-    'Llama 3.2 3B ': 'meta-llama/llama-3.2-3b-instruct:free',    
-    'Gemini 2.5 Pro': 'google/gemini-2.5-pro-exp-03-25',
-    'Kimi K2': 'moonshotai/kimi-k2:free',
-    'Venice Uncensored': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
+    'Deepseek R1': 'deepseek/deepseek-chat',
+    'Llama 3.1 8B': 'meta-llama/llama-3.1-8b-instruct:free',
+    'Gemini Flash 1.5': 'google/gemini-flash-1.5',
+    'Kimi K2': 'moonshot-ai/moonshot-v1-128k',
+    'Venice Uncensored': 'cognitivecomputations/dolphin-mixtral-8x7b:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -76,7 +76,7 @@ class NetworkManager {
             availableTokensForResponse
         );
 
-        const maxRetries = 5; // Увеличиваем количество попыток
+        const maxRetries = 5;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 const response = await axios.post(
@@ -101,12 +101,12 @@ class NetworkManager {
                 
                 if (error.response && error.response.status === 429) {
                     console.log(`Rate limit hit. Attempt ${attempt}. Waiting silently...`);
-                    const waitTime = 5000 + Math.random() * 5000; // Ждем от 5 до 10 секунд
+                    const waitTime = 5000 + Math.random() * 5000;
                     if (attempt < maxRetries) {
                         await new Promise(resolve => setTimeout(resolve, waitTime));
                         continue;
                     } else {
-                        throw new Error(`Слишком много запросов к "${network.name}". Лимит не сбросился после нескольких попыток.`);
+                        throw new Error(`Слишком много запросов к "${network.name}".`);
                     }
                 } else if (error.response && errorData && errorData.message && errorData.message.includes('No endpoints found')) {
                     throw new Error(`Модель "${settings.model}" временно недоступна. Пожалуйста, выберите другую модель в настройках.`);
@@ -234,7 +234,7 @@ class NeuralCollaborativeFramework {
         while (this.iterations < this.settings.iteration_count) {
             if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
             this.iterations++;
-            this.sendMessage(`\n\n--- 💬 *Итерация ${this.iterations} из ${this.settings.iteration_count}* ---\n`);
+            await this.sendMessage(`\n\n--- 💬 *Итерация ${this.iterations} из ${this.settings.iteration_count}* ---\n`);
             
             let iterationHistory = "";
 
@@ -249,23 +249,23 @@ class NeuralCollaborativeFramework {
                 }
                 prompt += `Here is the conversation from the current round so far:\n${iterationHistory}\n\n---\nAs the ${networkName}, provide your input now.`;
 
-                this.sendMessage(`🤔 _${networkName} думает..._`);
+                await this.sendMessage(`🤔 _${networkName} думает..._`);
                 const response = await this.networkManager.generateResponse(networkId, prompt, this.settings);
                 if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
-                this.sendMessage(`*${networkName}:*\n${response}`);
+                await this.sendMessage(`*${networkName}:*\n${response}`);
                 
                 iterationHistory += `\n\n**${networkName} said:**\n${response}`;
-                await new Promise(resolve => setTimeout(resolve, 3000)); // Пауза между нейросетями
+                await new Promise(resolve => setTimeout(resolve, 3000));
             }
 
             if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
-            this.sendMessage(`📝 _Синтезатор анализирует..._`);
+            await this.sendMessage(`📝 _Синтезатор анализирует..._`);
             const summaryPrompt = `Please create a concise summary of the key points from the following discussion:\n\n${iterationHistory}`;
             const summary = await this.networkManager.generateResponse('summarizer', summaryPrompt, this.settings);
             if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
-            this.sendMessage(`*Сводка итерации ${this.iterations}:*\n${summary}`);
+            await this.sendMessage(`*Сводка итерации ${this.iterations}:*\n${summary}`);
             
-            this.sendMessage(`🗳️ _Проводим голосование по сводке..._`);
+            await this.sendMessage(`🗳️ _Проводим голосование по сводке..._`);
             let votesFor = 0;
             let votesAgainst = 0;
 
@@ -278,16 +278,16 @@ class NeuralCollaborativeFramework {
                 const votePrompt = `Here is the discussion summary to vote on:\n"${summary}"\n\nAs the ${networkName}, do you accept this summary? Respond with ONLY the word "${keywords.accept}" or "${keywords.reject}" in ${this.settings.discussion_language}, followed by a brief reason.`;
                 const voteResponse = await this.networkManager.generateResponse(networkId, votePrompt, this.settings);
                 if (!this.isWorking) { this.sendMessage("Обсуждение прервано пользователем."); return; }
-                this.sendMessage(`*${networkName} голосует:*\n${voteResponse}`);
+                await this.sendMessage(`*${networkName} голосует:*\n${voteResponse}`);
                 
                 if (acceptRegex.test(voteResponse)) votesFor++; else votesAgainst++;
-                await new Promise(resolve => setTimeout(resolve, 1500)); // Пауза между голосами
+                await new Promise(resolve => setTimeout(resolve, 1500));
             }
 
             if (votesAgainst >= votesFor) {
-                this.sendMessage(`*Голосование провалено* (${votesFor} за, ${votesAgainst} против). Сводка отклонена.`);
+                await this.sendMessage(`*Голосование провалено* (${votesFor} за, ${votesAgainst} против). Сводка отклонена.`);
             } else {
-                this.sendMessage(`*Голосование успешно!* (${votesFor} за, ${votesAgainst} против). Сводка принята.`);
+                await this.sendMessage(`*Голосование успешно!* (${votesFor} за, ${votesAgainst} против). Сводка принята.`);
                 this.acceptedSummaries.push(summary);
             }
         }
@@ -295,13 +295,13 @@ class NeuralCollaborativeFramework {
 
     async finalizeDevelopment() {
         if (this.acceptedSummaries.length === 0) {
-            this.sendMessage("\n\n--- 🏁 *Обсуждение завершено, но ни одна сводка не была принята.* ---");
+            await this.sendMessage("\n\n--- 🏁 *Обсуждение завершено, но ни одна сводка не была принята.* ---");
             return;
         }
-        this.sendMessage("\n\n--- 🏁 *Все итерации завершены. Формирую итоговый отчет...* ---");
+        await this.sendMessage("\n\n--- 🏁 *Все итерации завершены. Формирую итоговый отчет...* ---");
         const finalPrompt = `Based on the topic "${this.projectDescription}" and the following accepted summaries, create a comprehensive final output. \n\nSummaries:\n${this.acceptedSummaries.join('\n\n')}`;
         const finalOutput = await this.networkManager.generateResponse('summarizer', finalPrompt, this.settings);
-        this.sendMessage(`*Итоговый результат коллаборации:*\n\n${finalOutput}`);
+        await this.sendMessage(`*Итоговый результат коллаборации:*\n\n${finalOutput}`);
     }
 }
 
@@ -324,7 +324,7 @@ bot.setMyCommands([
 function getOrCreateSession(chatId) {
     if (!chatSessions[chatId]) {
         chatSessions[chatId] = new NeuralCollaborativeFramework((text) => {
-            bot.sendMessage(chatId, text, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, text));
+            return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, text));
         });
     }
     return chatSessions[chatId];
