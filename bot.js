@@ -17,7 +17,6 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 // Добавлены новые ключи. В данном коде они пока не используются напрямую,
 // так как все запросы идут через OpenRouter, но это хороший задел на будущее.
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const GROK_API_KEY = process.env.GROK_API_KEY;
 
 
 // --- КОНСТАНТЫ ---
@@ -31,10 +30,6 @@ const MODEL_MAP = {
     'GPT-4o (новейшая)': 'openai/gpt-4o',
     'GPT-4 Turbo': 'openai/gpt-4-turbo',
     'GPT-3.5 Turbo': 'openai/gpt-3.5-turbo:free',
-
-    // Grok (xAI) Models
-    'Grok Llama3 8B': 'grok/llama3-8b',
-    'Grok Llama3 70B': 'grok/llama3-70b',
 
     // Anthropic Models
     'Claude 3.5 Sonnet': 'anthropic/claude-3.5-sonnet',
