@@ -14,8 +14,7 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const GROK_API_KEY = process.env.GROK_API_KEY; // Зарезервировано для будущего использования
+const GROK_API_KEY = process.env.GROK_API_KEY; // Зарезервировано
 
 
 // --- КОНСТАНТЫ ---
@@ -23,18 +22,13 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
-// --- ОБНОВЛЕННЫЙ СПИСОК МОДЕЛЕЙ С ПРОВАЙДЕРАМИ ---
+// --- ОБНОВЛЕННЫЙ СПИСОК МОДЕЛЕЙ (БЕЗ CLAUDE) ---
 const MODEL_MAP = {
     // --- Прямые запросы к OpenAI API ---
     '[OpenAI] GPT-4o':             { id: 'gpt-4o', provider: 'openai' },
     '[OpenAI] GPT-4 Turbo':        { id: 'gpt-4-turbo', provider: 'openai' },
     '[OpenAI] GPT-3.5 Turbo':      { id: 'gpt-3.5-turbo', provider: 'openai' },
     
-    // --- Прямые запросы к Anthropic API ---
-    '[Claude] 3.5 Sonnet':         { id: 'claude-3-5-sonnet-20240620', provider: 'anthropic' },
-    '[Claude] 3 Opus':             { id: 'claude-3-opus-20240229', provider: 'anthropic' },
-    '[Claude] 3 Haiku':            { id: 'claude-3-haiku-20240307', provider: 'anthropic' },
-
     // --- Запросы через OpenRouter (для остальных моделей) ---
     '[Grok] Llama3 70B':           { id: 'grok/llama3-70b', provider: 'openrouter' },
     '[Meta] Llama 3 70B':          { id: 'meta-llama/llama-3-70b-instruct', provider: 'openrouter' },
@@ -93,8 +87,6 @@ class NetworkManager {
             switch (modelInfo.provider) {
                 case 'openai':
                     return await this._callOpenAI(modelInfo.id, systemPrompt, prompt, temp, maxTokens);
-                case 'anthropic':
-                    return await this._callAnthropic(modelInfo.id, systemPrompt, prompt, temp, maxTokens);
                 case 'openrouter':
                     return await this._callOpenRouter(modelInfo.id, systemPrompt, prompt, temp, maxTokens);
                 default:
@@ -126,28 +118,6 @@ class NetworkManager {
             }
         );
         return response.data.choices[0].message.content.trim();
-    }
-
-    async _callAnthropic(modelId, systemPrompt, userPrompt, temperature, max_tokens) {
-        if (!ANTHROPIC_API_KEY) throw new Error("Ключ ANTHROPIC_API_KEY не найден в .env");
-
-        const response = await axios.post(
-            'https://api.anthropic.com/v1/messages',
-            {
-                model: modelId,
-                system: systemPrompt,
-                messages: [{ role: "user", content: userPrompt }],
-                temperature: temperature,
-                max_tokens: max_tokens,
-            },
-            {
-                headers: {
-                    'x-api-key': ANTHROPIC_API_KEY,
-                    'anthropic-version': '2023-06-01'
-                }
-            }
-        );
-        return response.data.content[0].text.trim();
     }
 
     async _callOpenRouter(modelId, systemPrompt, userPrompt, temperature, max_tokens) {
@@ -429,7 +399,7 @@ bot.onText(/\/start/, (msg) => {
 1. *(Опционально)* Прикрепите файлы (фото, документы).
 2. Нажмите "✍️ Новое Обсуждение" или используйте команду /run и напишите тему.
 3. В "⚙️ Настройках" выберите модель:
-   - *[OpenAI]* и *[Claude]* используют ваши платные ключи напрямую.
+   - *[OpenAI]* использует ваш платный ключ напрямую.
    - Остальные модели работают через OpenRouter.
 
 *Команды:*
@@ -701,7 +671,7 @@ function updateOrderMenu(chatId, messageId, session) {
 function updateModelMenu(chatId, messageId, session) {
     const keyboard = AVAILABLE_MODELS.map(modelName => ([{ text: `${modelName === session.settings.model ? '🔘' : '⚪️'} ${modelName}`, callback_data: `setmodel_${modelName}` }]));
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText('*Выберите AI-модель:*\n_Модели [OpenAI] и [Claude] используют ваши API ключи напрямую._', {
+    bot.editMessageText('*Выберите AI-модель:*\n_Модели [OpenAI] используют ваш API ключ напрямую._', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     }).catch(() => {});
