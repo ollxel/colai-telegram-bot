@@ -28,10 +28,6 @@ const MODEL_MAP = {
     'GPT-4o (новейшая)': 'openai/gpt-4o',
     'GPT-4 Turbo': 'openai/gpt-4-turbo',
     'GPT-3.5 Turbo (free)': 'openai/gpt-3.5-turbo:free',
-
-    // xAI (Grok) Models
-    'Grok Llama3 8B': 'grok/llama3-8b',
-    'Grok Llama3 70B': 'grok/llama3-70b',
     
     // Anthropic Models
     'Claude 3.5 Sonnet (новейшая)': 'anthropic/claude-3.5-sonnet',
