@@ -14,7 +14,8 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const GROK_API_KEY = process.env.GROK_API_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const GROK_API_KEY = process.env.GROK_API_KEY; // Зарезервировано для будущего использования
 
 
 // --- КОНСТАНТЫ ---
@@ -22,30 +23,28 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
-// --- ОБНОВЛЕННЫЙ И ИСПРАВЛЕННЫЙ СПИСОК МОДЕЛЕЙ ---
+// --- ОБНОВЛЕННЫЙ СПИСОК МОДЕЛЕЙ С ПРОВАЙДЕРАМИ ---
 const MODEL_MAP = {
-    // OpenAI Models
-    'GPT-4o (новейшая)': 'openai/gpt-4o',
-    'GPT-4 Turbo': 'openai/gpt-4-turbo',
-    'GPT-3.5 Turbo (free)': 'openai/gpt-3.5-turbo:free',
+    // --- Прямые запросы к OpenAI API ---
+    '[OpenAI] GPT-4o':             { id: 'gpt-4o', provider: 'openai' },
+    '[OpenAI] GPT-4 Turbo':        { id: 'gpt-4-turbo', provider: 'openai' },
+    '[OpenAI] GPT-3.5 Turbo':      { id: 'gpt-3.5-turbo', provider: 'openai' },
     
-    // Anthropic Models
-    'Claude 3.5 Sonnet (новейшая)': 'anthropic/claude-3.5-sonnet',
-    'Claude 3 Opus': 'anthropic/claude-3-opus',
-    'Claude 3 Haiku': 'anthropic/claude-3-haiku',
+    // --- Прямые запросы к Anthropic API ---
+    '[Claude] 3.5 Sonnet':         { id: 'claude-3-5-sonnet-20240620', provider: 'anthropic' },
+    '[Claude] 3 Opus':             { id: 'claude-3-opus-20240229', provider: 'anthropic' },
+    '[Claude] 3 Haiku':            { id: 'claude-3-haiku-20240307', provider: 'anthropic' },
 
-    // Google Models
-    'Gemini Pro 1.5': 'google/gemini-pro-1.5',
-    'Gemini Flash 1.5': 'google/gemini-flash-1.5',
-    'Gemini Pro (free)': 'google/gemini-pro:free',
+    // --- Запросы через OpenRouter (для остальных моделей) ---
+    '[Grok] Llama3 70B':           { id: 'grok/llama3-70b', provider: 'openrouter' },
+    '[Meta] Llama 3 70B':          { id: 'meta-llama/llama-3-70b-instruct', provider: 'openrouter' },
+    '[Google] Gemini Pro 1.5':     { id: 'google/gemini-pro-1.5', provider: 'openrouter' },
+    '[Mistral] Mistral Large':     { id: 'mistralai/mistral-large', provider: 'openrouter' },
 
-    // Meta Models
-    'Llama 3 70B': 'meta-llama/llama-3-70b-instruct',
-    'Llama 3 8B (free)': 'meta-llama/llama-3-8b-instruct:free',
-    
-    // MistralAI Models
-    'Mistral Large': 'mistralai/mistral-large',
-    'Mistral 7B (free)': 'mistralai/mistral-7b-instruct:free'
+    // --- Бесплатные модели через OpenRouter ---
+    '[Free] Llama 3 8B':           { id: 'meta-llama/llama-3-8b-instruct:free', provider: 'openrouter' },
+    '[Free] Mistral 7B':           { id: 'mistralai/mistral-7b-instruct:free', provider: 'openrouter' },
+    '[Free] Gemini Pro':           { id: 'google/gemini-pro:free', provider: 'openrouter' },
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
@@ -57,6 +56,9 @@ const VOTE_KEYWORDS = {
     'Ukrainian': { accept: 'приймаю', reject: 'відхиляю' }
 };
 
+// =========================================================================
+// === КЛАСС-МАРШРУТИЗАТОР ДЛЯ РАБОТЫ С РАЗНЫМИ API ===
+// =========================================================================
 class NetworkManager {
     constructor() {
         this.networks = {
@@ -73,79 +75,107 @@ class NetworkManager {
     }
 
     async generateResponse(networkId, prompt, settings) {
+        const modelInfo = MODEL_MAP[settings.model];
+        if (!modelInfo) {
+            throw new Error(`Модель "${settings.model}" не найдена или неверно сконфигурирована в MODEL_MAP.`);
+        }
+
         const network = this.networks[networkId] || settings.custom_networks[networkId];
         if (!network) throw new Error(`Сеть ${networkId} не найдена.`);
 
-        let systemPrompt = (settings.custom_networks[networkId]?.system_prompt) || settings.system_prompts[networkId];
-        systemPrompt += `\n\nВАЖНАЯ ИНСТРУКЦИЯ: Вы ДОЛЖНЫ отвечать ИСКЛЮЧИТЕЛЬНО на ${settings.discussion_language} языке. Не используйте другие языки.`;
-        
+        const systemPrompt = (settings.custom_networks[networkId]?.system_prompt) || settings.system_prompts[networkId] +
+            `\n\nВАЖНАЯ ИНСТРУКЦИЯ: Вы ДОЛЖНЫ отвечать ИСКЛЮЧИТЕЛЬНО на ${settings.discussion_language} языке.`;
+
         const temp = settings.custom_networks[networkId]?.temperature || settings.temperature;
-        
-        const modelContextLimit = 8192;
-        const promptTokens = Math.ceil(prompt.length / 3.5); 
-        const availableTokensForResponse = modelContextLimit - promptTokens - 200; 
+        const maxTokens = settings.custom_networks[networkId]?.max_tokens || settings.max_tokens;
 
-        if (availableTokensForResponse <= 0) {
-            throw new Error(`Контекст обсуждения стал слишком длинным для модели.`);
+        try {
+            switch (modelInfo.provider) {
+                case 'openai':
+                    return await this._callOpenAI(modelInfo.id, systemPrompt, prompt, temp, maxTokens);
+                case 'anthropic':
+                    return await this._callAnthropic(modelInfo.id, systemPrompt, prompt, temp, maxTokens);
+                case 'openrouter':
+                    return await this._callOpenRouter(modelInfo.id, systemPrompt, prompt, temp, maxTokens);
+                default:
+                    throw new Error(`Неизвестный провайдер API: "${modelInfo.provider}"`);
+            }
+        } catch (error) {
+            const errorMessage = error.response?.data?.error?.message || error.message || "Неизвестная ошибка API.";
+            console.error(`Ошибка при вызове API через ${modelInfo.provider} для "${network.name}":`, errorMessage);
+            throw new Error(`Не удалось получить ответ от "${network.name}" (${modelInfo.provider}): ${errorMessage}`);
         }
+    }
 
-        const finalMaxTokens = Math.min(
-            settings.custom_networks[networkId]?.max_tokens || settings.max_tokens,
-            availableTokensForResponse
+    async _callOpenAI(modelId, systemPrompt, userPrompt, temperature, max_tokens) {
+        if (!OPENAI_API_KEY) throw new Error("Ключ OPENAI_API_KEY не найден в .env");
+        
+        const response = await axios.post(
+            'https://api.openai.com/v1/chat/completions',
+            {
+                model: modelId,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: userPrompt }
+                ],
+                temperature: temperature,
+                max_tokens: max_tokens,
+            },
+            {
+                headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` }
+            }
         );
+        return response.data.choices[0].message.content.trim();
+    }
 
-        const maxRetries = 5;
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const modelIdentifier = MODEL_MAP[settings.model];
-                if (!modelIdentifier) {
-                    throw new Error(`Модель "${settings.model}" не найдена. Проверьте MODEL_MAP.`);
-                }
+    async _callAnthropic(modelId, systemPrompt, userPrompt, temperature, max_tokens) {
+        if (!ANTHROPIC_API_KEY) throw new Error("Ключ ANTHROPIC_API_KEY не найден в .env");
 
-                const response = await axios.post(
-                    OPENROUTER_API_URL,
-                    {
-                        model: modelIdentifier,
-                        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: prompt }],
-                        temperature: temp,
-                        max_tokens: finalMaxTokens,
-                    },
-                    { 
-                        headers: { 
-                            'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                            'HTTP-Referer': 'https://github.com/ollxel/neural-collab-bot',
-                            'X-Title': 'Neural Collab Bot'
-                        } 
-                    }
-                );
-                
-                const content = response.data.choices[0].message.content;
-                if (!content || content.trim() === "") {
-                    throw new Error("API вернул пустой ответ.");
-                }
-                return content.trim();
-
-            } catch (error) {
-                const errorData = error.response?.data?.error;
-                
-                if (error.response && error.response.status === 429) {
-                    console.log(`Превышен лимит запросов. Попытка ${attempt}. Ожидание...`);
-                    const waitTime = 5000 + Math.random() * 5000;
-                    if (attempt < maxRetries) {
-                        await new Promise(resolve => setTimeout(resolve, waitTime));
-                        continue;
-                    } else {
-                        throw new Error(`Слишком много запросов к "${network.name}". Попробуйте позже.`);
-                    }
-                } else if (error.response && errorData && errorData.message && (errorData.message.includes('No endpoints found') || errorData.message.includes('currently overloaded') || errorData.message.includes('not a valid model ID'))) {
-                    throw new Error(`Модель "${settings.model}" временно недоступна, перегружена или ее ID неверен. Пожалуйста, выберите другую модель в настройках.`);
-                } else {
-                    console.error(`Ошибка API OpenRouter для "${network.name}":`, error.response ? error.response.data : error.message);
-                    const errorDetails = errorData?.message || "Неизвестная ошибка API.";
-                    throw new Error(`Не удалось получить ответ от "${network.name}": ${errorDetails}`);
+        const response = await axios.post(
+            'https://api.anthropic.com/v1/messages',
+            {
+                model: modelId,
+                system: systemPrompt,
+                messages: [{ role: "user", content: userPrompt }],
+                temperature: temperature,
+                max_tokens: max_tokens,
+            },
+            {
+                headers: {
+                    'x-api-key': ANTHROPIC_API_KEY,
+                    'anthropic-version': '2023-06-01'
                 }
             }
+        );
+        return response.data.content[0].text.trim();
+    }
+
+    async _callOpenRouter(modelId, systemPrompt, userPrompt, temperature, max_tokens) {
+        if (!OPENROUTER_API_KEY) throw new Error("Ключ OPENROUTER_API_KEY не найден в .env");
+        
+        const response = await axios.post(
+            OPENROUTER_API_URL,
+            {
+                model: modelId,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: userPrompt }
+                ],
+                temperature: temperature,
+                max_tokens: max_tokens,
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                    'HTTP-Referer': 'https://github.com/ollxel/neural-collab-bot',
+                    'X-Title': 'Neural Collab Bot'
+                }
+            }
+        );
+         if (!response.data.choices || response.data.choices.length === 0) {
+            throw new Error('API вернул пустой массив choices. Возможно, сработал контент-фильтр.');
         }
+        return response.data.choices[0].message.content.trim();
     }
 
     async describeImage(filePath) {
@@ -164,6 +194,7 @@ class NetworkManager {
     }
 }
 
+
 class NeuralCollaborativeFramework {
     constructor(sendMessageCallback) {
         this.sendMessage = sendMessageCallback;
@@ -174,9 +205,9 @@ class NeuralCollaborativeFramework {
 
     initializeSettings() {
         this.settings = {
-            model: 'GPT-4o (новейшая)',
+            model: '[OpenAI] GPT-4o',
             temperature: 0.7,
-            max_tokens: 1500,
+            max_tokens: 2048,
             discussion_language: 'Russian',
             iteration_count: 2,
             enabled_networks: ['network1', 'network2'],
@@ -286,7 +317,7 @@ class NeuralCollaborativeFramework {
                 await this.sendMessage(`*${networkName}:*\n${response}`);
                 
                 iterationHistory += `\n\n**${networkName} сказал(а):**\n${response}`;
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
 
             if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
@@ -312,7 +343,7 @@ class NeuralCollaborativeFramework {
                 await this.sendMessage(`*${networkName} голосует:*\n${voteResponse}`);
                 
                 if (acceptRegex.test(voteResponse)) votesFor++; else votesAgainst++;
-                await new Promise(resolve => setTimeout(resolve, 1500));
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
 
             if (votesAgainst >= votesFor) {
@@ -337,8 +368,8 @@ class NeuralCollaborativeFramework {
 }
 
 
-if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
-    console.error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_TOKEN и OPENROUTER_API_KEY должны быть указаны в .env файле!");
+if (!TELEGRAM_TOKEN) {
+    console.error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не найден в .env файле!");
     process.exit(1);
 }
 
@@ -392,16 +423,19 @@ const MAIN_KEYBOARD = {
 bot.onText(/\/start/, (msg) => {
     const welcomeText = `
 *Добро пожаловать!*
-Я бот для совместной работы AI-личностей.
+Я бот для совместной работы AI-личностей с поддержкой прямых API.
 
 *Как начать:*
-1. *(Опционально)* Прикрепите файлы (фото, документы), которые нейросети должны учесть.
-2. Нажмите кнопку "✍️ Новое Обсуждение" или используйте команду /run и напишите тему.
+1. *(Опционально)* Прикрепите файлы (фото, документы).
+2. Нажмите "✍️ Новое Обсуждение" или используйте команду /run и напишите тему.
+3. В "⚙️ Настройках" выберите модель:
+   - *[OpenAI]* и *[Claude]* используют ваши платные ключи напрямую.
+   - Остальные модели работают через OpenRouter.
 
 *Команды:*
 /run - Начать новое обсуждение
 /settings - Показать и изменить настройки
-/stop - Немедленно остановить текущее обсуждение
+/stop - Остановить текущее обсуждение
 /reset - Сбросить все настройки и историю
     `;
     bot.sendMessage(msg.chat.id, welcomeText, { ...MAIN_KEYBOARD, parse_mode: 'Markdown' });
@@ -525,7 +559,7 @@ const callbackQueryHandlers = {
         bot.deleteMessage(chatId, messageId).catch(()=>{});
     },
     settokens: (session, value, chatId, messageId) => {
-        bot.sendMessage(chatId, `Пришлите следующим сообщением новый лимит токенов (число от 1 до 16000):`);
+        bot.sendMessage(chatId, `Пришлите следующим сообщением новый лимит токенов (число от 1 до 4096):`);
         activeRequests[chatId] = { type: 'max_tokens' };
         bot.deleteMessage(chatId, messageId).catch(()=>{});
     },
@@ -578,17 +612,11 @@ bot.on('callback_query', (query) => {
     }
 });
 
-
 function sendSettingsMessage(chatId) {
     const session = getOrCreateSession(chatId);
     const s = session.settings;
-    const nm = session.networkManager;
-
-    const enabledNetworks = s.enabled_networks
-        .map(id => nm.networks[id]?.name || s.custom_networks[id]?.name)
-        .join(', ') || 'Никто не включен';
     
-    const settingsText = `*Текущие настройки для этого чата:*\n\n*Участники:* ${s.enabled_networks.length} реплик\n*Язык:* \`${s.discussion_language}\`\n*AI-Модель:* \`${s.model}\``;
+    const settingsText = `*Текущие настройки:*\n\n*Участники:* ${s.enabled_networks.length} реплик\n*Язык:* \`${s.discussion_language}\`\n*AI-Модель:* \`${s.model}\``;
 
     const inlineKeyboard = {
         reply_markup: {
@@ -603,7 +631,6 @@ function sendSettingsMessage(chatId) {
     };
     bot.sendMessage(chatId, settingsText, { ...inlineKeyboard, parse_mode: 'Markdown' });
 }
-
 
 function updateToggleMenu(chatId, messageId, session) {
     const { enabled_networks, custom_networks } = session.settings;
@@ -674,7 +701,7 @@ function updateOrderMenu(chatId, messageId, session) {
 function updateModelMenu(chatId, messageId, session) {
     const keyboard = AVAILABLE_MODELS.map(modelName => ([{ text: `${modelName === session.settings.model ? '🔘' : '⚪️'} ${modelName}`, callback_data: `setmodel_${modelName}` }]));
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText('*Выберите AI-модель для всех нейросетей:*\n\n_Модели с пометкой (free) не расходуют ваш баланс на OpenRouter._', {
+    bot.editMessageText('*Выберите AI-модель:*\n_Модели [OpenAI] и [Claude] используют ваши API ключи напрямую._', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     }).catch(() => {});
@@ -740,7 +767,6 @@ function updateCustomNetworksMenu(chatId, messageId, session) {
     }).catch(() => {});
 }
 
-
 const activeRequestHandlers = {
     'topic': (session, text, chatId) => {
         if (!text || text.trim().length < 5) {
@@ -762,11 +788,11 @@ const activeRequestHandlers = {
     },
     'max_tokens': (session, text, chatId) => {
         const tokens = parseInt(text, 10);
-        if (!isNaN(tokens) && tokens > 0 && tokens <= 16000) {
+        if (!isNaN(tokens) && tokens > 0 && tokens <= 4096) {
             session.settings.max_tokens = tokens;
             bot.sendMessage(chatId, `✅ Лимит токенов установлен на: \`${tokens}\``, { parse_mode: 'Markdown' });
         } else {
-            bot.sendMessage(chatId, '❌ Ошибка. Введите целое число от 1 до 16000.');
+            bot.sendMessage(chatId, '❌ Ошибка. Введите целое число от 1 до 4096.');
         }
         sendSettingsMessage(chatId);
     },
