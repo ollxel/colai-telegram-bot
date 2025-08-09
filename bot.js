@@ -9,50 +9,42 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// --- ЗАГРУЗКА И ПРОВЕРКА КЛЮЧЕЙ ---
+// --- ЗАГРУЗКА КЛЮЧЕЙ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
-// Загружаем ключи как массивы, убирая пустые значения на случай лишних запятых
-const OPENROUTER_API_KEYS = (process.env.OPENROUTER_API_KEYS || '').split(',').filter(k => k);
-const HUGGINGFACE_API_KEYS = (process.env.HUGGINGFACE_API_KEYS || '').split(',').filter(k => k);
-
-if (!TELEGRAM_TOKEN) {
-    throw new Error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не найден в .env файле!");
+if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
+    throw new Error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN и OPENROUTER_API_KEY должны быть указаны в .env файле!");
 }
-if (OPENROUTER_API_KEYS.length === 0) {
-    console.warn("ВНИМАНИЕ: Не найдены ключи OPENROUTER_API_KEYS. Модели, работающие через OpenRouter, будут недоступны.");
-}
-if (HUGGINGFACE_API_KEYS.length === 0) {
-    console.warn("ВНИМАНИЕ: Не найдены ключи HUGGINGFACE_API_KEYS. Модели, работающие через Hugging Face, будут недоступны.");
-}
-
 
 // --- КОНСТАНТЫ ---
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const HUGGINGFACE_API_URL = 'https://api-inference.huggingface.co/models/';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const PORT = process.env.PORT || 3000;
 
-// --- НОВЫЙ СПИСОК МОДЕЛЕЙ С УКАЗАНИЕМ ПРОВАЙДЕРА ---
+// --- СПИСОК МОДЕЛЕЙ (ВСЕ ЧЕРЕЗ OPENROUTER) ---
 const MODEL_MAP = {
-    // --- Hugging Face модели ---
-    '[HF] Mistral 7B Instruct': { id: 'mistralai/Mistral-7B-Instruct-v0.2', provider: 'huggingface' },
-    '[HF] Google Gemma IT':      { id: 'google/gemma-7b-it', provider: 'huggingface' },
-
-    // --- OpenRouter модели ---
-    '[OR] Llama 3 8B (Free)':   { id: 'meta-llama/llama-3-8b-instruct:free', provider: 'openrouter' },
-    '[OR] Llama 3 70B':          { id: 'meta-llama/llama-3-70b-instruct', provider: 'openrouter' },
-    '[OR] OpenAI GPT-4o':        { id: 'openai/gpt-4o', provider: 'openrouter' },
-    '[OR] Google Gemini Pro 1.5':{ id: 'google/gemini-pro-1.5', provider: 'openrouter' },
-    '[OR] Claude 3.5 Sonnet':    { id: 'anthropic/claude-3.5-sonnet', provider: 'openrouter' },
+    'GPT-4o': 'openai/gpt-4o',
+    'GPT-4 Turbo': 'openai/gpt-4-turbo',
+    'Llama 3 70B': 'meta-llama/llama-3-70b-instruct',
+    'Claude 3.5 Sonnet': 'anthropic/claude-3.5-sonnet',
+    'Gemini Pro 1.5': 'google/gemini-pro-1.5',
+    'Llama 3 8B (Free)': 'meta-llama/llama-3-8b-instruct:free',
+    'Mistral 7B (Free)': 'mistralai/mistral-7b-instruct:free',
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
-const VOTE_KEYWORDS = { 'Russian': { accept: 'принимаю', reject: 'отклоняю' } };
+const VOTE_KEYWORDS = {
+    'English': { accept: 'accept', reject: 'reject' },
+    'Russian': { accept: 'принимаю', reject: 'отклоняю' },
+    'German': { accept: 'akzeptieren', reject: 'ablehnen' },
+    'French': { accept: 'accepter', reject: 'rejeter' },
+    'Ukrainian': { accept: 'приймаю', reject: 'відхиляю' }
+};
 
 // =========================================================================
-// === НОВЫЙ КЛАСС-МАРШРУТИЗАТОР С РОТАЦИЕЙ КЛЮЧЕЙ ===
+// === УПРОЩЕННЫЙ КЛАСС, РАБОТАЮЩИЙ ТОЛЬКО С OPENROUTER ===
 // =========================================================================
 class NetworkManager {
     constructor() {
@@ -67,109 +59,70 @@ class NetworkManager {
             network8: { name: 'Сеть "Адвокат Дьявола"', short_name: 'advocate' },
             summarizer: { name: 'Сеть-Синтезатор', short_name: 'synthesizer' }
         };
-        // Индексы для ротации ключей
-        this.currentOpenRouterKeyIndex = 0;
-        this.currentHfKeyIndex = 0;
     }
 
-    // --- Хелперы для получения следующего ключа по кругу ---
-    _getNextOpenRouterKey() {
-        if (OPENROUTER_API_KEYS.length === 0) throw new Error("Нет доступных ключей OpenRouter.");
-        const key = OPENROUTER_API_KEYS[this.currentOpenRouterKeyIndex];
-        this.currentOpenRouterKeyIndex = (this.currentOpenRouterKeyIndex + 1) % OPENROUTER_API_KEYS.length;
-        return key;
-    }
-
-    _getNextHfKey() {
-        if (HUGGINGFACE_API_KEYS.length === 0) throw new Error("Нет доступных ключей Hugging Face.");
-        const key = HUGGINGFACE_API_KEYS[this.currentHfKeyIndex];
-        this.currentHfKeyIndex = (this.currentHfKeyIndex + 1) % HUGGINGFACE_API_KEYS.length;
-        return key;
-    }
-
-    // --- Главный метод-маршрутизатор ---
     async generateResponse(networkId, prompt, settings) {
-        const modelInfo = MODEL_MAP[settings.model];
-        if (!modelInfo) throw new Error(`Модель "${settings.model}" не найдена в MODEL_MAP.`);
-
         const network = this.networks[networkId] || settings.custom_networks[networkId];
         if (!network) throw new Error(`Сеть ${networkId} не найдена.`);
 
         const systemPrompt = (settings.custom_networks[networkId]?.system_prompt) || settings.system_prompts[networkId] +
             `\n\nВАЖНАЯ ИНСТРУКЦИЯ: Вы ДОЛЖНЫ отвечать ИСКЛЮЧИТЕЛЬНО на ${settings.discussion_language} языке.`;
-
+        
         const temp = settings.custom_networks[networkId]?.temperature || settings.temperature;
         const maxTokens = settings.custom_networks[networkId]?.max_tokens || settings.max_tokens;
 
         try {
-            switch (modelInfo.provider) {
-                case 'openrouter':
-                    const orKey = this._getNextOpenRouterKey();
-                    return await this._callOpenRouter(modelInfo.id, systemPrompt, prompt, temp, maxTokens, orKey);
-                case 'huggingface':
-                    const hfKey = this._getNextHfKey();
-                    return await this._callHuggingFace(modelInfo.id, systemPrompt, prompt, temp, maxTokens, hfKey);
-                default:
-                    throw new Error(`Неизвестный провайдер API: "${modelInfo.provider}"`);
+            const modelIdentifier = MODEL_MAP[settings.model];
+            if (!modelIdentifier) {
+                throw new Error(`Модель "${settings.model}" не найдена в MODEL_MAP.`);
             }
-        } catch (error) {
-            const errorMessage = error.response?.data?.error || error.message || "Неизвестная ошибка API.";
-            console.error(`Ошибка при вызове ${modelInfo.provider} для "${network.name}":`, errorMessage);
-            throw new Error(`Не удалось получить ответ от "${network.name}" (${modelInfo.provider}): ${JSON.stringify(errorMessage)}`);
-        }
-    }
 
-    async _callOpenRouter(modelId, systemPrompt, userPrompt, temperature, max_tokens, apiKey) {
-        const response = await axios.post(
-            OPENROUTER_API_URL,
-            {
-                model: modelId,
-                messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-                temperature: temperature,
-                max_tokens: max_tokens,
-            },
-            { headers: { 'Authorization': `Bearer ${apiKey}` } }
-        );
-        if (!response.data.choices || response.data.choices.length === 0) throw new Error('API вернул пустой массив choices.');
-        return response.data.choices[0].message.content.trim();
-    }
-
-    async _callHuggingFace(modelId, systemPrompt, userPrompt, temperature, max_tokens, apiKey) {
-        // Простой формат промпта для моделей Hugging Face
-        const fullPrompt = `${systemPrompt}\n\n[USER]${userPrompt}\n[ASSISTANT]`;
-
-        const response = await axios.post(
-            `${HUGGINGFACE_API_URL}${modelId}`,
-            {
-                inputs: fullPrompt,
-                parameters: {
-                    temperature: Math.max(temperature, 0.1), // HF не любит температуру 0
-                    max_new_tokens: max_tokens, // Важно: HF использует 'max_new_tokens'
-                    return_full_text: false, // Возвращать только сгенерированный текст
+            const response = await axios.post(
+                OPENROUTER_API_URL,
+                {
+                    model: modelIdentifier,
+                    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: prompt }],
+                    temperature: temp,
+                    max_tokens: maxTokens,
+                },
+                { 
+                    headers: { 
+                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                        'HTTP-Referer': 'https://github.com/ollxel/neural-collab-bot',
+                        'X-Title': 'Neural Collab Bot'
+                    } 
                 }
-            },
-            { headers: { 'Authorization': `Bearer ${apiKey}` } }
-        );
-        if (!response.data || !response.data[0] || !response.data[0].generated_text) throw new Error('API Hugging Face вернул неверный формат ответа.');
-        
-        // Модель может вернуть исходный промпт, его нужно отрезать, если он есть
-        let generatedText = response.data[0].generated_text;
-        if(generatedText.startsWith(fullPrompt)) {
-            generatedText = generatedText.substring(fullPrompt.length);
+            );
+            
+            const content = response.data.choices[0].message.content;
+            if (!content || content.trim() === "") throw new Error("API вернул пустой ответ.");
+            
+            return content.trim();
+
+        } catch (error) {
+            const errorData = error.response?.data?.error;
+            console.error(`Ошибка API OpenRouter для "${network.name}":`, error.response ? error.response.data : error.message);
+            const errorDetails = errorData?.message || "Неизвестная ошибка API.";
+            throw new Error(`Не удалось получить ответ от "${network.name}": ${errorDetails}`);
         }
-        return generatedText.trim();
     }
-    
-    // Метод для Gemini (остается без изменений)
+
     async describeImage(filePath) {
-       // ... (код без изменений)
+        if (!GOOGLE_GEMINI_API_KEY) throw new Error("Ключ Google Gemini API не настроен.");
+        const imageBytes = fs.readFileSync(filePath).toString('base64');
+        const requestBody = {
+            contents: [{
+                parts: [
+                    { text: "Опиши это изображение в деталях." },
+                    { inline_data: { mime_type: 'image/jpeg', data: imageBytes } }
+                ]
+            }]
+        };
+        const response = await axios.post(GEMINI_API_URL, requestBody);
+        return response.data.candidates[0].content.parts[0].text;
     }
 }
 
-
-// =========================================================================
-// === ОСТАЛЬНОЙ КОД БОТА (БЕЗ ИЗМЕНЕНИЙ В ЛОГИКЕ) ===
-// =========================================================================
 
 class NeuralCollaborativeFramework {
     constructor(sendMessageCallback) {
@@ -181,9 +134,9 @@ class NeuralCollaborativeFramework {
 
     initializeSettings() {
         this.settings = {
-            model: '[OR] Llama 3 8B (Free)',
+            model: 'Llama 3 8B (Free)',
             temperature: 0.7,
-            max_tokens: 1024,
+            max_tokens: 1500,
             discussion_language: 'Russian',
             iteration_count: 2,
             enabled_networks: ['network1', 'network2'],
@@ -202,8 +155,7 @@ class NeuralCollaborativeFramework {
             }
         };
     }
-    
-    // ... остальной код (resetProject, startCollaboration, processStagedFiles, runDiscussionLoop, finalizeDevelopment) остается точно таким же
+
     resetProject() {
         this.iterations = 0;
         this.acceptedSummaries = [];
@@ -237,7 +189,6 @@ class NeuralCollaborativeFramework {
     
     async processStagedFiles() {
         if (this.settings.staged_files.length === 0) return "";
-
         await this.sendMessage("📎 _Обрабатываю прикрепленные файлы..._");
         let context = "\n\n--- КОНТЕКСТ ИЗ ПРИКРЕПЛЕННЫХ ФАЙЛОВ ---\n";
         for (const file of this.settings.staged_files) {
@@ -324,7 +275,7 @@ class NeuralCollaborativeFramework {
             }
 
             if (votesAgainst >= votesFor) {
-                await this.sendMessage(`*Голосование провалено* (${votesFor} за, ${votesAgainst} против). Сводка отклонена. Продолжаем обсуждение.`);
+                await this.sendMessage(`*Голосование провалено* (${votesFor} за, ${votesAgainst} против). Сводка отклонена.`);
             } else {
                 await this.sendMessage(`*Голосование успешно!* (${votesFor} за, ${votesAgainst} против). Сводка принята.`);
                 this.acceptedSummaries.push(summary);
@@ -344,12 +295,10 @@ class NeuralCollaborativeFramework {
     }
 }
 
-
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const chatSessions = {};
 const activeRequests = {};
 
-// ... (весь UI-код: setMyCommands, sendLongMessage, getOrCreateSession, onText, on('message'), callbackQueryHandlers и т.д. остается здесь без изменений)
 bot.setMyCommands([
     { command: '/start', description: '🚀 Помощь и информация' },
     { command: '/run', description: '✍️ Начать новое обсуждение' },
@@ -361,18 +310,12 @@ bot.setMyCommands([
 async function sendLongMessage(chatId, text) {
     const maxLength = 4096;
     if (text.length <= maxLength) {
-        return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' }).catch((e) => {
-            console.warn("Ошибка отправки Markdown, пробую обычный текст:", e.message);
-            return bot.sendMessage(chatId, text);
-        });
+        return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, text));
     }
 
     const chunks = text.match(new RegExp(`[\\s\\S]{1,${maxLength}}`, 'g')) || [];
     for (const chunk of chunks) {
-        await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' }).catch(async (e) => {
-             console.warn("Ошибка отправки Markdown в чанке, пробую обычный текст:", e.message);
-             await bot.sendMessage(chatId, chunk);
-        });
+        await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, chunk));
         await new Promise(resolve => setTimeout(resolve, 500));
     }
 }
@@ -384,7 +327,7 @@ function getOrCreateSession(chatId) {
     return chatSessions[chatId];
 }
 
-console.log('Бот успешно запущен! Ключи OpenRouter:', OPENROUTER_API_KEYS.length, 'Ключи Hugging Face:', HUGGINGFACE_API_KEYS.length);
+console.log('Бот успешно запущен!');
 
 const MAIN_KEYBOARD = {
     reply_markup: {
@@ -395,16 +338,8 @@ const MAIN_KEYBOARD = {
 
 bot.onText(/\/start/, (msg) => {
     const welcomeText = `
-*Добро пожаловать в обновленного бота!*
-Теперь он использует несколько ваших API ключей для стабильной работы.
-
-*Как это работает:*
-- Вы предоставляете списки ключей для OpenRouter и Hugging Face в файле `.env`.
-- Бот автоматически переключает их при каждом запросе, чтобы избежать лимитов.
-
-*Модели:*
-- *[OR]* - модели, работающие через OpenRouter.
-- *[HF]* - модели, работающие через Hugging Face.
+*Добро пожаловать!*
+Этот бот использует OpenRouter для доступа к различным AI-моделям.
 
 *Команды:*
 /run - Начать новое обсуждение
@@ -431,15 +366,11 @@ bot.on('message', (msg) => {
             mime_type: msg.document?.mime_type || 'image/jpeg'
         });
         bot.sendMessage(chatId, `✅ Файл "${fileName}" добавлен и будет использован в следующем обсуждении.`);
-        if (activeRequests[chatId]?.type === 'topic') {
-            delete activeRequests[chatId];
-        }
+        if (activeRequests[chatId]?.type === 'topic') delete activeRequests[chatId];
         return;
     }
 
-    if (text && text.startsWith('/')) {
-        return;
-    }
+    if (text && text.startsWith('/')) return;
 
     if (activeRequests[chatId]) {
         handleActiveRequest(chatId, msg);
@@ -447,7 +378,7 @@ bot.on('message', (msg) => {
     }
 
     if (text === '✍️ Новое Обсуждение') {
-        bot.sendMessage(chatId, 'Какую тему вы хотите обсудить? Просто напишите ее в чат.');
+        bot.sendMessage(chatId, 'Какую тему вы хотите обсудить?');
         activeRequests[chatId] = { type: 'topic' };
     } else if (text === '⚙️ Настройки') {
         sendSettingsMessage(chatId);
@@ -455,7 +386,7 @@ bot.on('message', (msg) => {
 });
 
 bot.onText(/\/run/, (msg) => {
-    bot.sendMessage(msg.chat.id, 'Какую тему вы хотите обсудить? Напишите ее следующим сообщением.');
+    bot.sendMessage(msg.chat.id, 'Какую тему вы хотите обсудить?');
     activeRequests[msg.chat.id] = { type: 'topic' };
 });
 
@@ -466,7 +397,7 @@ bot.onText(/\/settings/, (msg) => {
 bot.onText(/\/reset/, (msg) => {
     delete chatSessions[msg.chat.id];
     delete activeRequests[msg.chat.id];
-    bot.sendMessage(msg.chat.id, "Обсуждение, настройки и ожидание ответа сброшены.", MAIN_KEYBOARD);
+    bot.sendMessage(msg.chat.id, "Обсуждение и настройки сброшены.", MAIN_KEYBOARD);
 });
 
 bot.onText(/\/stop/, (msg) => {
@@ -475,7 +406,7 @@ bot.onText(/\/stop/, (msg) => {
         session.isWorking = false;
         bot.sendMessage(msg.chat.id, "🛑 Получен сигнал остановки. Завершаю текущую операцию...");
     } else {
-        bot.sendMessage(msg.chat.id, "Сейчас нет активного обсуждения, чтобы его останавливать.");
+        bot.sendMessage(msg.chat.id, "Сейчас нет активного обсуждения.");
     }
 });
 
@@ -484,9 +415,9 @@ const callbackQueryHandlers = {
         const enabled = session.settings.enabled_networks;
         const index = enabled.indexOf(value);
         if (index > -1) {
-            session.settings.enabled_networks.splice(index, 1);
+            enabled.splice(index, 1);
         } else {
-            session.settings.enabled_networks.push(value);
+            enabled.push(value);
         }
         updateToggleMenu(chatId, messageId, session);
     },
@@ -503,9 +434,7 @@ const callbackQueryHandlers = {
             const networkId = order[index];
             order.splice(index + 1, 0, networkId);
         } else if (direction === 'remove') {
-            if (order.length > 0) { 
-               order.splice(index, 1);
-            }
+            if (order.length > 0) order.splice(index, 1);
         }
         updateOrderMenu(chatId, messageId, session);
     },
@@ -514,7 +443,7 @@ const callbackQueryHandlers = {
         updateModelMenu(chatId, messageId, session);
     },
     setlang: (session, value, chatId, messageId) => {
-        session.settings.discussion_language = 'Russian'; // Only Russian is supported in this example
+        session.settings.discussion_language = value;
         updateLangMenu(chatId, messageId, session);
     },
     setiterations: (session, value, chatId, messageId) => {
@@ -523,17 +452,17 @@ const callbackQueryHandlers = {
     },
     promptfor: (session, value, chatId, messageId) => {
         const networkName = session.networkManager.networks[value]?.name || session.settings.custom_networks[value]?.name;
-        bot.sendMessage(chatId, `Пришлите следующим сообщением новый системный промпт для "${networkName}":`);
+        bot.sendMessage(chatId, `Пришлите новый системный промпт для "${networkName}":`);
         activeRequests[chatId] = { type: 'system_prompt', networkId: value };
         bot.deleteMessage(chatId, messageId).catch(()=>{});
     },
     settemp: (session, value, chatId, messageId) => {
-        bot.sendMessage(chatId, `Пришлите следующим сообщением новое значение температуры (число от 0.0 до 2.0):`);
+        bot.sendMessage(chatId, `Пришлите новое значение температуры (число от 0.0 до 2.0):`);
         activeRequests[chatId] = { type: 'temperature' };
         bot.deleteMessage(chatId, messageId).catch(()=>{});
     },
     settokens: (session, value, chatId, messageId) => {
-        bot.sendMessage(chatId, `Пришлите следующим сообщением новый лимит токенов (число от 1 до 4096):`);
+        bot.sendMessage(chatId, `Пришлите новый лимит токенов (число от 1 до 4096):`);
         activeRequests[chatId] = { type: 'max_tokens' };
         bot.deleteMessage(chatId, messageId).catch(()=>{});
     },
@@ -547,22 +476,16 @@ const callbackQueryHandlers = {
             'prompts': updatePromptsMenu,
             'custom': updateCustomNetworksMenu,
             'createnew': (chatId, messageId, session) => {
-                if (Object.keys(session.settings.custom_networks).length >= 10) {
-                    bot.answerCallbackQuery(query.id, { text: "Достигнут лимит в 10 кастомных нейросетей.", show_alert: true });
-                } else {
-                    bot.sendMessage(chatId, "Введите имя для вашей новой нейросети:");
-                    activeRequests[chatId] = { type: 'custom_network_name' };
-                    bot.deleteMessage(chatId, messageId).catch(()=>{});
-                }
+                bot.sendMessage(chatId, "Введите имя для новой нейросети:");
+                activeRequests[chatId] = { type: 'custom_network_name' };
+                bot.deleteMessage(chatId, messageId).catch(()=>{});
             }
         };
         if (menuActions[value]) menuActions[value](chatId, messageId, session);
     },
     back: (session, value, chatId, messageId) => {
-        if (value === 'settings') {
-             bot.deleteMessage(chatId, messageId).catch(()=>{});
-             sendSettingsMessage(chatId);
-        }
+        bot.deleteMessage(chatId, messageId).catch(()=>{});
+        if (value === 'settings') sendSettingsMessage(chatId);
         if (value === 'advanced') updateAdvancedMenu(chatId, messageId, session);
     },
     close: (session, value, chatId, messageId) => {
@@ -623,12 +546,10 @@ function updateToggleMenu(chatId, messageId, session) {
     const allButtons = [...standardButtons, ...customButtons];
     
     const keyboard = [];
-    for (let i = 0; i < allButtons.length; i += 2) {
-        keyboard.push(allButtons.slice(i, i + 2));
-    }
+    for (let i = 0; i < allButtons.length; i += 2) keyboard.push(allButtons.slice(i, i + 2));
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
 
-    bot.editMessageText('*Включите или выключите участников:*\n_✅/❌ переключает базовое участие сети в обсуждении._', {
+    bot.editMessageText('*Включите или выключите участников:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     }).catch(() => {});
@@ -639,7 +560,7 @@ function updateOrderMenu(chatId, messageId, session) {
     const { networks } = session.networkManager;
 
     if (enabled_networks.length < 1) {
-        bot.editMessageText('*Нет включенных участников для сортировки.*\n\nВключите хотя бы одну сеть в меню "Участники".', {
+        bot.editMessageText('*Нет включенных участников для сортировки.*', {
              chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
              reply_markup: { inline_keyboard: [[{ text: '⬅️ Назад', callback_data: 'back_settings' }]] }
         }).catch(()=>{});
@@ -661,11 +582,7 @@ function updateOrderMenu(chatId, messageId, session) {
     });
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
 
-    const menuText = `*Измените порядок и количество реплик:*\n\n` +
-                     `🔼/🔽 - изменить порядок\n` +
-                     `➕ - дублировать нейросеть для еще одной реплики\n` +
-                     `➖ - удалить реплику из списка`;
-
+    const menuText = `*Измените порядок и количество реплик:*`;
     bot.editMessageText(menuText, {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
@@ -675,17 +592,17 @@ function updateOrderMenu(chatId, messageId, session) {
 function updateModelMenu(chatId, messageId, session) {
     const keyboard = AVAILABLE_MODELS.map(modelName => ([{ text: `${modelName === session.settings.model ? '🔘' : '⚪️'} ${modelName}`, callback_data: `setmodel_${modelName}` }]));
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText('*Выберите AI-модель:*\n_[OR] - OpenRouter, [HF] - Hugging Face_', {
+    bot.editMessageText('*Выберите AI-модель:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     }).catch(() => {});
 }
 
 function updateLangMenu(chatId, messageId, session) {
-    const languages = ['Russian']; // Simplified
+    const languages = ['Russian', 'English', 'German', 'French', 'Ukrainian'];
     const keyboard = languages.map(lang => ([{ text: `${lang === session.settings.discussion_language ? '🔘' : '⚪️'} ${lang}`, callback_data: `setlang_${lang}` }]));
     keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText('*Выберите язык общения нейросетей:*', {
+    bot.editMessageText('*Выберите язык общения:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
     }).catch(() => {});
@@ -693,7 +610,7 @@ function updateLangMenu(chatId, messageId, session) {
 
 function updateAdvancedMenu(chatId, messageId, session) {
     const s = session.settings;
-    const text = `*Продвинутые настройки:*\n\n- *Итерации:* \`${s.iteration_count}\` (циклов обсуждения)\n- *Температура:* \`${s.temperature}\` (креативность)\n- *Макс. токенов:* \`${s.max_tokens}\` (длина ответа)`;
+    const text = `*Продвинутые настройки:*\n\n- *Итерации:* \`${s.iteration_count}\`\n- *Температура:* \`${s.temperature}\`\n- *Макс. токенов:* \`${s.max_tokens}\``;
     
     const iterationButtons = [1, 2, 3, 4, 5].map(i => ({
         text: `${s.iteration_count === i ? '🔘' : '⚪️'} ${i}`,
@@ -716,7 +633,7 @@ function updatePromptsMenu(chatId, messageId, session) {
     const allNetworks = { ...session.networkManager.networks, ...session.settings.custom_networks };
     const buttons = Object.entries(allNetworks).map(([id, net]) => ([{ text: net.name, callback_data: `promptfor_${id}` }]));
     buttons.push([{ text: '⬅️ Назад', callback_data: 'back_advanced' }]);
-    bot.editMessageText('*Выберите нейросеть для изменения ее системного промпта (личности):*', {
+    bot.editMessageText('*Выберите нейросеть для изменения ее личности:*', {
         chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: buttons }
     }).catch(() => {});
@@ -724,9 +641,7 @@ function updatePromptsMenu(chatId, messageId, session) {
 
 function updateCustomNetworksMenu(chatId, messageId, session) {
     const { custom_networks } = session.settings;
-    const text = Object.keys(custom_networks).length > 0
-        ? '*Ваши кастомные нейросети:*\nВыберите для редактирования или удаления.'
-        : '*У вас пока нет кастомных нейросетей.*';
+    const text = Object.keys(custom_networks).length > 0 ? '*Ваши кастомные нейросети:*' : '*У вас нет кастомных нейросетей.*';
     
     const keyboard = Object.entries(custom_networks).map(([id, net]) => ([
         { text: net.name, callback_data: `editcustom_${id}` },
@@ -744,7 +659,7 @@ function updateCustomNetworksMenu(chatId, messageId, session) {
 const activeRequestHandlers = {
     'topic': (session, text, chatId) => {
         if (!text || text.trim().length < 5) {
-            bot.sendMessage(chatId, '❌ Тема слишком короткая. Пожалуйста, опишите задачу подробнее.');
+            bot.sendMessage(chatId, '❌ Тема слишком короткая.');
             activeRequests[chatId] = { type: 'topic' };
             return;
         }
@@ -777,36 +692,22 @@ const activeRequestHandlers = {
         sendSettingsMessage(chatId);
     },
     'custom_network_name': (session, text, chatId) => {
-        if (!text || text.trim().length < 3) {
-             bot.sendMessage(chatId, '❌ Имя слишком короткое. Попробуйте еще раз.');
-             activeRequests[chatId] = { type: 'custom_network_name' };
-             return;
-        }
         const newId = `custom${Date.now()}`;
         activeRequests[chatId] = { type: 'custom_network_prompt', id: newId, name: text.trim() };
-        bot.sendMessage(chatId, `Отлично! Теперь введите системный промпт (личность) для "${text.trim()}":`);
+        bot.sendMessage(chatId, `Отлично! Теперь введите системный промпт для "${text.trim()}":`);
     },
     'custom_network_prompt': (session, text, chatId, request) => {
-        if (!text || text.trim().length < 10) {
-             bot.sendMessage(chatId, '❌ Промпт слишком короткий. Опишите личность подробнее.');
-             activeRequests[chatId] = request;
-             return;
-        }
-        request.prompt = text;
-        
         session.settings.custom_networks[request.id] = {
             name: request.name,
             short_name: request.name.toLowerCase().replace(/\s/g, '').substring(0, 8),
-            system_prompt: request.prompt,
+            system_prompt: text,
             temperature: session.settings.temperature,
             max_tokens: session.settings.max_tokens
         };
-        
         if (!session.settings.enabled_networks.includes(request.id)) {
             session.settings.enabled_networks.push(request.id);
         }
-
-        bot.sendMessage(chatId, `✅ Новая нейросеть "${request.name}" успешно создана и включена!`);
+        bot.sendMessage(chatId, `✅ Новая нейросеть "${request.name}" создана!`);
         delete activeRequests[chatId];
         sendSettingsMessage(chatId);
     }
@@ -820,19 +721,21 @@ function handleActiveRequest(chatId, msg) {
     const text = msg.text;
 
     if (!text) {
-        bot.sendMessage(chatId, "Пожалуйста, пришлите ответ в виде текста.");
+        bot.sendMessage(chatId, "Пожалуйста, ответьте текстом.");
         return;
     }
 
     const handler = activeRequestHandlers[request.type];
     if (handler) {
-        if (!request.type.startsWith('custom_network_') || request.type === 'custom_network_prompt') {
-            delete activeRequests[chatId];
-        }
+        delete activeRequests[chatId];
         handler(session, text, chatId, request);
     }
 }
 
+bot.on('polling_error', (error) => {
+    console.error(`Ошибка Polling: [${error.code}] ${error.message}`);
+});
+
 const app = express();
 app.get('/', (req, res) => res.send('Бот жив и здоров!'));
-app.listen(PORT, () => console.log(`Веб-сервер для проверки работоспособности запущен на порту ${PORT}`));
+app.listen(PORT, () => console.log(`Веб-сервер для health check запущен на порту ${PORT}`));
