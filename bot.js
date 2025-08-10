@@ -2,16 +2,12 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const express = require('express');
-const { GoogleAuth } = require('googleapis').google.auth;
-const pdf = require('pdf-parse');
-const mammoth = require('mammoth');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 // --- ЗАГРУЗКА КЛЮЧЕЙ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
 if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
@@ -20,9 +16,8 @@ if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
 
 // --- КОНСТАНТЫ ---
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${GOOGLE_GEMINI_API_KEY}`;
 const MAX_RETRIES = 3;
-const FALLBACK_MODEL_ID = 'meta-llama/llama-3-8b-instruct:free';
+const FALLBACK_MODEL_ID = 'meta-llama/llama-3-8b-instruct:free'; // Надежная бесплатная резервная модель
 
 // --- СПИСОК МОДЕЛЕЙ ---
 const MODEL_MAP = {
@@ -36,16 +31,10 @@ const MODEL_MAP = {
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
-const VOTE_KEYWORDS = {
-    'English': { accept: 'accept', reject: 'reject' },
-    'Russian': { accept: 'принимаю', reject: 'отклоняю' },
-    'German': { accept: 'akzeptieren', reject: 'ablehnen' },
-    'French': { accept: 'accepter', reject: 'rejeter' },
-    'Ukrainian': { accept: 'приймаю', reject: 'відхиляю' }
-};
+const VOTE_KEYWORDS = { 'Russian': { accept: 'принимаю', reject: 'отклоняю' } };
 
 // =========================================================================
-// === УСТОЙЧИВЫЙ К ОШИБКАМ NETWORK MANAGER ===
+// === УЛЬТРА-УСТОЙЧИВЫЙ К ОШИБКАМ NETWORK MANAGER ===
 // =========================================================================
 class NetworkManager {
     constructor() {
@@ -69,7 +58,8 @@ class NetworkManager {
         const systemPrompt = (settings.custom_networks[networkId]?.system_prompt) || settings.system_prompts[networkId] +
             `\n\nВАЖНАЯ ИНСТРУКЦИЯ: Вы ДОЛЖНЫ отвечать ИСКЛЮЧИТЕЛЬНО на ${settings.discussion_language} языке.`;
         
-        let modelIdentifier = MODEL_MAP[settings.model];
+        let originalModelName = settings.model;
+        let modelIdentifier = MODEL_MAP[originalModelName];
         let currentMaxTokens = settings.custom_networks[networkId]?.max_tokens || settings.max_tokens;
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -82,13 +72,7 @@ class NetworkManager {
                         temperature: settings.custom_networks[networkId]?.temperature || settings.temperature,
                         max_tokens: currentMaxTokens,
                     },
-                    { 
-                        headers: { 
-                            'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                            'HTTP-Referer': 'https://github.com/ollxel/neural-collab-bot',
-                            'X-Title': 'Neural Collab Bot'
-                        } 
-                    }
+                    { headers: { 'Authorization': `Bearer ${OPENROUTER_API_KEY}` } }
                 );
                 
                 const content = response.data.choices[0].message.content;
@@ -100,31 +84,43 @@ class NetworkManager {
                 const errorMessage = error.response?.data?.error?.message || error.message || "Неизвестная ошибка";
                 console.error(`Попытка ${attempt} для "${network.name}" не удалась. Ошибка: ${errorMessage}`);
 
+                // НОВОЕ ПРАВИЛО: Закончились кредиты
+                if (errorMessage.includes('Insufficient credits')) {
+                    console.log(`У модели ${modelIdentifier} закончились кредиты. Переключаюсь на резервную модель: ${FALLBACK_MODEL_ID}`);
+                    modelIdentifier = FALLBACK_MODEL_ID;
+                    if (sendMessageCallback) {
+                        await sendMessageCallback(`_(У модели "${originalModelName}" закончились кредиты. Автоматически переключаюсь на бесплатную резервную модель...)_`);
+                    }
+                    continue; // Сразу переходим к следующей попытке с бесплатной моделью
+                }
+                
+                // ПРАВИЛО 2: Не хватает токенов
                 if (errorMessage.includes('can only afford')) {
                     const match = errorMessage.match(/can only afford (\d+)/);
                     if (match && match[1]) {
-                        const affordableTokens = parseInt(match[1], 10) - 20; // Уменьшаем с запасом
+                        const affordableTokens = parseInt(match[1], 10) - 20;
                         if (affordableTokens > 0) {
                             console.log(`Автоматически снижаю лимит токенов до ${affordableTokens}`);
                             currentMaxTokens = affordableTokens;
                             if (sendMessageCallback) await sendMessageCallback(`_(${network.name}: лимит токенов исчерпан, автоматически уменьшаю ответ...)_`);
-                            continue; // Переходим к следующей попытке с новым лимитом
+                            continue;
                         }
                     }
                 }
 
+                // ПРАВИЛО 3: Модель временно недоступна
                 if (errorMessage.includes('No endpoints found')) {
                     console.log(`Модель ${modelIdentifier} недоступна. Переключаюсь на резервную модель: ${FALLBACK_MODEL_ID}`);
                     modelIdentifier = FALLBACK_MODEL_ID;
-                    if (sendMessageCallback) await sendMessageCallback(`_(Модель "${settings.model}" временно недоступна, автоматически переключаюсь на резервную...)_`);
-                    continue; // Переходим к следующей попытке с резервной моделью
+                    if (sendMessageCallback) await sendMessageCallback(`_(Модель "${originalModelName}" временно недоступна, автоматически переключаюсь на резервную...)_`);
+                    continue;
                 }
 
                 if (attempt === MAX_RETRIES) {
                     throw new Error(`Не удалось получить ответ от "${network.name}" после ${MAX_RETRIES} попыток: ${errorMessage}`);
                 }
                 
-                await new Promise(resolve => setTimeout(resolve, 2000)); // Ждем перед следующей попыткой
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
     }
@@ -181,10 +177,8 @@ class NeuralCollaborativeFramework {
         await this.sendMessage(`*Начинаю коллаборацию на тему:* "${topic}"\n\n_Чтобы остановить, используйте команду /stop_`);
 
         try {
-            // let fileContext = await this.processStagedFiles(); - Функционал файлов временно отключен для упрощения
             let fileContext = "";
             this.settings.staged_files = [];
-
             await this.runDiscussionLoop(fileContext);
             if (this.isWorking) await this.finalizeDevelopment();
         } catch (error) {
@@ -214,12 +208,10 @@ class NeuralCollaborativeFramework {
                 prompt += `Вот ход обсуждения в текущем раунде:\n${iterationHistory}\n\n---\nКак ${networkName}, выскажи свою точку зрения.`;
 
                 await this.sendMessage(`🤔 _${networkName} думает..._`);
-                
                 const response = await this.networkManager.generateResponse(networkId, prompt, this.settings, this.sendMessage);
                 
                 if (!this.isWorking) { await this.sendMessage("Обсуждение прервано пользователем."); return; }
                 await this.sendMessage(`*${networkName}:*\n${response}`);
-                
                 iterationHistory += `\n\n**${networkName} сказал(а):**\n${response}`;
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
@@ -393,270 +385,4 @@ const callbackQueryHandlers = {
     settemp: (session, value, chatId, messageId) => {
         bot.sendMessage(chatId, `Пришлите новое значение температуры (число от 0.0 до 2.0):`);
         activeRequests[chatId] = { type: 'temperature' };
-        bot.deleteMessage(chatId, messageId).catch(()=>{});
-    },
-    settokens: (session, value, chatId, messageId) => {
-        bot.sendMessage(chatId, `Пришлите новый лимит токенов (число от 1 до 4096):`);
-        activeRequests[chatId] = { type: 'max_tokens' };
-        bot.deleteMessage(chatId, messageId).catch(()=>{});
-    },
-    menu: (session, value, chatId, messageId) => {
-        const menuActions = {
-            'toggle': updateToggleMenu,
-            'order': updateOrderMenu,
-            'model': updateModelMenu,
-            'lang': updateLangMenu,
-            'advanced': updateAdvancedMenu,
-            'prompts': updatePromptsMenu,
-            'custom': updateCustomNetworksMenu,
-            'createnew': (chatId, messageId, session) => {
-                bot.sendMessage(chatId, "Введите имя для новой нейросети:");
-                activeRequests[chatId] = { type: 'custom_network_name' };
-                bot.deleteMessage(chatId, messageId).catch(()=>{});
-            }
-        };
-        if (menuActions[value]) menuActions[value](chatId, messageId, session);
-    },
-    back: (session, value, chatId, messageId) => {
-        bot.deleteMessage(chatId, messageId).catch(()=>{});
-        if (value === 'settings') sendSettingsMessage(chatId);
-        if (value === 'advanced') updateAdvancedMenu(chatId, messageId, session);
-    },
-    close: (session, value, chatId, messageId) => {
-        bot.deleteMessage(chatId, messageId).catch(()=>{});
-    }
-};
-
-bot.on('callback_query', (query) => {
-    const { message, data } = query;
-    const chatId = message.chat.id;
-    const messageId = message.message_id;
-    const session = getOrCreateSession(chatId);
-    bot.answerCallbackQuery(query.id);
-    const [action, ...valueParts] = data.split('_');
-    const value = valueParts.join('_');
-    if (callbackQueryHandlers[action]) {
-        callbackQueryHandlers[action](session, value, chatId, messageId);
-    }
-});
-
-function sendSettingsMessage(chatId) {
-    const session = getOrCreateSession(chatId);
-    const s = session.settings;
-    const settingsText = `*Текущие настройки:*\n\n*Участники:* ${s.enabled_networks.length} реплик\n*Язык:* \`${s.discussion_language}\`\n*AI-Модель:* \`${s.model}\``;
-    const inlineKeyboard = {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '🕹 Участники', callback_data: 'menu_toggle' }, { text: '🔀 Порядок и Реплики', callback_data: 'menu_order' }],
-                [{ text: '🤖 AI-Модель', callback_data: 'menu_model' }, { text: '🌍 Язык', callback_data: 'menu_lang' }],
-                [{ text: '🧠 Мои Нейросети', callback_data: 'menu_custom' }],
-                [{ text: '🔧 Продвинутые настройки', callback_data: 'menu_advanced' }],
-                [{ text: '❌ Закрыть', callback_data: 'close_settings' }]
-            ]
-        }
-    };
-    bot.sendMessage(chatId, settingsText, { ...inlineKeyboard, parse_mode: 'Markdown' });
-}
-
-function updateToggleMenu(chatId, messageId, session) {
-    const { enabled_networks, custom_networks } = session.settings;
-    const { networks } = session.networkManager;
-    const standardButtons = Object.entries(networks).filter(([id]) => id !== 'summarizer').map(([id, net]) => {
-        const isEnabled = enabled_networks.includes(id);
-        return { text: `${isEnabled ? '✅' : '❌'} ${net.name}`, callback_data: `toggle_${id}` };
-    });
-    const customButtons = Object.entries(custom_networks).map(([id, net]) => {
-        const isEnabled = enabled_networks.includes(id);
-        return { text: `${isEnabled ? '✅' : '❌'} ${net.name} (моя)`, callback_data: `toggle_${id}` };
-    });
-    const allButtons = [...standardButtons, ...customButtons];
-    const keyboard = [];
-    for (let i = 0; i < allButtons.length; i += 2) keyboard.push(allButtons.slice(i, i + 2));
-    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText('*Включите или выключите участников:*', {
-        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    }).catch(() => {});
-}
-
-function updateOrderMenu(chatId, messageId, session) {
-    const { enabled_networks, custom_networks } = session.settings;
-    const { networks } = session.networkManager;
-    if (enabled_networks.length < 1) {
-        bot.editMessageText('*Нет включенных участников для сортировки.*', {
-             chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
-             reply_markup: { inline_keyboard: [[{ text: '⬅️ Назад', callback_data: 'back_settings' }]] }
-        }).catch(()=>{});
-        return;
-    }
-    const keyboard = enabled_networks.map((networkId, index) => {
-        const networkName = networks[networkId]?.name || custom_networks[networkId]?.name;
-        const upArrow = (index > 0) ? { text: '🔼', callback_data: `order_up_${index}` } : { text: ' ', callback_data: 'no_op' };
-        const downArrow = (index < enabled_networks.length - 1) ? { text: '🔽', callback_data: `order_down_${index}` } : { text: ' ', callback_data: 'no_op' };
-        return [
-            upArrow, 
-            { text: networkName, callback_data: 'no_op' }, 
-            downArrow,
-            { text: '➕', callback_data: `order_add_${index}` },
-            { text: '➖', callback_data: `order_remove_${index}` }
-        ];
-    });
-    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText(`*Измените порядок и количество реплик:*`, {
-        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    }).catch(() => {});
-}
-
-function updateModelMenu(chatId, messageId, session) {
-    const keyboard = AVAILABLE_MODELS.map(modelName => ([{ text: `${modelName === session.settings.model ? '🔘' : '⚪️'} ${modelName}`, callback_data: `setmodel_${modelName}` }]));
-    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText('*Выберите AI-модель:*', {
-        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    }).catch(() => {});
-}
-
-function updateLangMenu(chatId, messageId, session) {
-    const languages = ['Russian', 'English', 'German', 'French', 'Ukrainian'];
-    const keyboard = languages.map(lang => ([{ text: `${lang === session.settings.discussion_language ? '🔘' : '⚪️'} ${lang}`, callback_data: `setlang_${lang}` }]));
-    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText('*Выберите язык общения:*', {
-        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    }).catch(() => {});
-}
-
-function updateAdvancedMenu(chatId, messageId, session) {
-    const s = session.settings;
-    const text = `*Продвинутые настройки:*\n\n- *Итерации:* \`${s.iteration_count}\`\n- *Температура:* \`${s.temperature}\`\n- *Макс. токенов:* \`${s.max_tokens}\``;
-    const iterationButtons = [1, 2, 3, 4, 5].map(i => ({
-        text: `${s.iteration_count === i ? '🔘' : '⚪️'} ${i}`,
-        callback_data: `setiterations_${i}`
-    }));
-    const keyboard = [
-        iterationButtons,
-        [{ text: '🌡️ Температура', callback_data: 'settemp_ ' }, { text: '📄 Макс. токенов', callback_data: 'settokens_ ' }],
-        [{ text: '🎭 Личности сетей', callback_data: 'menu_prompts' }],
-        [{ text: '⬅️ Назад', callback_data: 'back_settings' }]
-    ];
-    bot.editMessageText(text, {
-        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    }).catch(() => {});
-}
-
-function updatePromptsMenu(chatId, messageId, session) {
-    const allNetworks = { ...session.networkManager.networks, ...session.settings.custom_networks };
-    const buttons = Object.entries(allNetworks).map(([id, net]) => ([{ text: net.name, callback_data: `promptfor_${id}` }]));
-    buttons.push([{ text: '⬅️ Назад', callback_data: 'back_advanced' }]);
-    bot.editMessageText('*Выберите нейросеть для изменения ее личности:*', {
-        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: buttons }
-    }).catch(() => {});
-}
-
-function updateCustomNetworksMenu(chatId, messageId, session) {
-    const { custom_networks } = session.settings;
-    const text = Object.keys(custom_networks).length > 0 ? '*Ваши кастомные нейросети:*' : '*У вас нет кастомных нейросетей.*';
-    const keyboard = Object.entries(custom_networks).map(([id, net]) => ([
-        { text: net.name, callback_data: `editcustom_${id}` },
-        { text: '🗑', callback_data: `deletecustom_${id}` }
-    ]));
-    keyboard.push([{ text: '➕ Создать новую', callback_data: 'menu_createnew' }]);
-    keyboard.push([{ text: '⬅️ Назад', callback_data: 'back_settings' }]);
-    bot.editMessageText(text, {
-        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    }).catch(() => {});
-}
-
-const activeRequestHandlers = {
-    'topic': (session, text, chatId) => {
-        if (!text || text.trim().length < 5) {
-            bot.sendMessage(chatId, '❌ Тема слишком короткая.');
-            activeRequests[chatId] = { type: 'topic' };
-            return;
-        }
-        session.startCollaboration(text.trim());
-    },
-    'temperature': (session, text, chatId) => {
-        const temp = parseFloat(text.replace(',', '.'));
-        if (!isNaN(temp) && temp >= 0.0 && temp <= 2.0) {
-            session.settings.temperature = temp;
-            bot.sendMessage(chatId, `✅ Температура установлена на: \`${temp}\``, { parse_mode: 'Markdown' });
-        } else {
-            bot.sendMessage(chatId, '❌ Ошибка. Введите число от 0.0 до 2.0.');
-        }
-        sendSettingsMessage(chatId);
-    },
-    'max_tokens': (session, text, chatId) => {
-        const tokens = parseInt(text, 10);
-        if (!isNaN(tokens) && tokens > 0 && tokens <= 4096) {
-            session.settings.max_tokens = tokens;
-            bot.sendMessage(chatId, `✅ Лимит токенов установлен на: \`${tokens}\``, { parse_mode: 'Markdown' });
-        } else {
-            bot.sendMessage(chatId, '❌ Ошибка. Введите целое число от 1 до 4096.');
-        }
-        sendSettingsMessage(chatId);
-    },
-    'system_prompt': (session, text, chatId, request) => {
-        session.settings.system_prompts[request.networkId] = text;
-        const networkName = session.networkManager.networks[request.networkId]?.name || session.settings.custom_networks[request.networkId]?.name;
-        bot.sendMessage(chatId, `✅ Системный промпт для "${networkName}" обновлен.`);
-        sendSettingsMessage(chatId);
-    },
-    'custom_network_name': (session, text, chatId) => {
-        const newId = `custom${Date.now()}`;
-        activeRequests[chatId] = { type: 'custom_network_prompt', id: newId, name: text.trim() };
-        bot.sendMessage(chatId, `Отлично! Теперь введите системный промпт для "${text.trim()}":`);
-    },
-    'custom_network_prompt': (session, text, chatId, request) => {
-        session.settings.custom_networks[request.id] = {
-            name: request.name,
-            short_name: request.name.toLowerCase().replace(/\s/g, '').substring(0, 8),
-            system_prompt: text,
-            temperature: session.settings.temperature,
-            max_tokens: session.settings.max_tokens
-        };
-        if (!session.settings.enabled_networks.includes(request.id)) {
-            session.settings.enabled_networks.push(request.id);
-        }
-        bot.sendMessage(chatId, `✅ Новая нейросеть "${request.name}" создана!`);
-        delete activeRequests[chatId];
-        sendSettingsMessage(chatId);
-    }
-};
-
-function handleActiveRequest(chatId, msg) {
-    const request = activeRequests[chatId];
-    if (!request) return;
-    const session = getOrCreateSession(chatId);
-    const text = msg.text;
-    if (!text) {
-        bot.sendMessage(chatId, "Пожалуйста, ответьте текстом.");
-        return;
-    }
-    const handler = activeRequestHandlers[request.type];
-    if (handler) {
-        delete activeRequests[chatId];
-        handler(session, text, chatId, request);
-    }
-}
-
-bot.on('polling_error', (error) => {
-    console.error(`Ошибка Polling: [${error.code}] ${error.message}`);
-});
-
-// =========================================================================
-// === ИСПРАВЛЕННЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER ===
-// =========================================================================
-const app = express();
-const PORT = process.env.PORT || 3000; 
-const HOST = '0.0.0.0';
-
-app.get('/', (req, res) => res.send('Бот жив и здоров!'));
-
-app.listen(PORT, HOST, () => {
-    console.log(`Веб-сервер для health check УСПЕШНО запущен и слушает ${HOST}:${PORT}`);
-});
+        bot
