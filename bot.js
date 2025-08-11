@@ -163,7 +163,7 @@ class NeuralCollaborativeFramework {
 
     initializeSettings() {
         this.settings = {
-            model: 'GPT-4o (новейшая)',
+            model: 'GPT-3.5 Turbo (free)',
             temperature: 0.7,
             max_tokens: 1500,
             discussion_language: 'Russian',
