@@ -37,21 +37,17 @@ const FALLBACK_MODEL_ID = 'meta-llama/llama-3-8b-instruct:free';
 
 // --- СПИСОК МОДЕЛЕЙ ---
 const MODEL_MAP = {
-    'GPT-4o (новейшая)': 'openai/gpt-4o',
-    'GPT-4 Turbo': 'openai/gpt-4-turbo',
-    'GPT-3.5 Turbo (free)': 'openai/gpt-3.5-turbo:free',
-    'Grok Llama3 8B': 'grok/llama3-8b',
-    'Grok Llama3 70B': 'grok/llama3-70b',
-    'Claude 3.5 Sonnet (новейшая)': 'anthropic/claude-3.5-sonnet',
-    'Claude 3 Opus': 'anthropic/claude-3-opus',
-    'Claude 3 Haiku': 'anthropic/claude-3-haiku',
-    'Gemini Pro 1.5': 'google/gemini-pro-1.5',
-    'Gemini Flash 1.5': 'google/gemini-flash-1.5',
-    'Gemini Pro (free)': 'google/gemini-pro:free',
-    'Llama 3 70B': 'meta-llama/llama-3-70b-instruct',
-    'Llama 3 8B (free)': 'meta-llama/llama-3-8b-instruct:free',
-    'Mistral Large': 'mistralai/mistral-large',
-    'Mistral 7B (free)': 'mistralai/mistral-7b-instruct:free'
+    'GPT-4o (новейшая) - 128000 токенов': 'openai/gpt-4o',
+    'GPT-4 Turbo - 128000 токенов': 'openai/gpt-4-turbo',
+    'GPT-3.5 Turbo (free) - 16385 токенов': 'openai/gpt-3.5-turbo:free',
+    'Qwen 3 Coder - 262000 токенов': 'qwen/qwen3-coder:free'
+    'Deepseek V3 - 163840 токенов': 'deepseek/deepseek-chat-v3-0324:free'
+    'GLM 4.5 Air - 131072 токенов': 'z-ai/glm-4.5-air:free'
+    'Kimi K2 - 32768 токенов': 'moonshotai/kimi-k2:free'
+    'Venice Uncensored - 32768 токенов': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
+    
+    'Gemini Flash 2.0 Experimental - 1048576 токенов': 'google/gemini-2.0-flash-exp:free',
+    'Mistral 7B (free) - 32768 токенов': 'mistralai/mistral-7b-instruct:free'
 };
 const AVAILABLE_MODELS = Object.keys(MODEL_MAP);
 
