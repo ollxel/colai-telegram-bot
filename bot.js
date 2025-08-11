@@ -40,12 +40,11 @@ const MODEL_MAP = {
     'GPT-4o (новейшая) - 128000 токенов': 'openai/gpt-4o',
     'GPT-4 Turbo - 128000 токенов': 'openai/gpt-4-turbo',
     'GPT-3.5 Turbo (free) - 16385 токенов': 'openai/gpt-3.5-turbo:free',
-    'Qwen 3 Coder - 262000 токенов': 'qwen/qwen3-coder:free'
-    'Deepseek V3 - 163840 токенов': 'deepseek/deepseek-chat-v3-0324:free'
-    'GLM 4.5 Air - 131072 токенов': 'z-ai/glm-4.5-air:free'
-    'Kimi K2 - 32768 токенов': 'moonshotai/kimi-k2:free'
-    'Venice Uncensored - 32768 токенов': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free'
-    
+    'Qwen 3 Coder - 262000 токенов': 'qwen/qwen3-coder:free',
+    'Deepseek V3 - 163840 токенов': 'deepseek/deepseek-chat-v3-0324:free',
+    'GLM 4.5 Air - 131072 токенов': 'z-ai/glm-4.5-air:free',
+    'Kimi K2 - 32768 токенов': 'moonshotai/kimi-k2:free',
+    'Venice Uncensored - 32768 токенов': 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
     'Gemini Flash 2.0 Experimental - 1048576 токенов': 'google/gemini-2.0-flash-exp:free',
     'Mistral 7B (free) - 32768 токенов': 'mistralai/mistral-7b-instruct:free'
 };
