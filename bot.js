@@ -10,14 +10,15 @@ const path = require('path');
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY; // Опционально, для картинок
 
-// Собираем все ключи OpenRouter в один массив
+// Собираем все ключи OpenRouter в один массив (теперь до 5 ключей)
+const MAX_OPENROUTER_KEYS = 5;
 const OPENROUTER_KEYS = [];
-for (let i = 1; i <= 10; i++) { // Ищем до 10 ключей
+for (let i = 1; i <= MAX_OPENROUTER_KEYS; i++) {
     const key = process.env[`OPENROUTER_KEY${i}`];
     if (key) {
         OPENROUTER_KEYS.push(key);
     } else {
-        break; // Останавливаемся, как только ключ не найден
+        break;
     }
 }
 
@@ -25,14 +26,14 @@ if (!TELEGRAM_TOKEN) {
     throw new Error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не указан!");
 }
 if (OPENROUTER_KEYS.length === 0) {
-    throw new Error("КРИТИЧЕСКАЯ ОШИБКА: Не найден ни один ключ OpenRouter (OPENROUTER_KEY1, OPENROUTER_KEY2 и т.д.)!");
+    throw new Error("КРИТИЧЕСКАЯ ОШИБКА: Не найден ни один ключ OpenRouter (OPENROUTER_KEY1..OPENROUTER_KEY5)!");
 }
 
 console.log(`Бот запущен. Обнаружено ключей OpenRouter: ${OPENROUTER_KEYS.length}`);
 
 // --- КОНСТАНТЫ ---
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const MAX_RETRIES = OPENROUTER_KEYS.length + 2; // Даем больше попыток, чем ключей
+const MAX_RETRIES = OPENROUTER_KEYS.length + 2; // Даем чуть больше попыток, чем ключей
 const FALLBACK_MODEL_ID = 'meta-llama/llama-3-8b-instruct:free';
 
 // --- СПИСОК МОДЕЛЕЙ ---
@@ -71,11 +72,13 @@ class NetworkManager {
         };
     }
 
+    // Возвращаем объект с ключом и индексом (чтобы корректно логировать и при необходимости вернуть указатель)
     _getNextKey() {
-        const key = OPENROUTER_KEYS[this.currentKeyIndex];
+        const index = this.currentKeyIndex;
+        const key = OPENROUTER_KEYS[index];
         this.currentKeyIndex = (this.currentKeyIndex + 1) % OPENROUTER_KEYS.length;
-        console.log(`Использую ключ #${this.currentKeyIndex + 1}`);
-        return key;
+        console.log(`Использую ключ #${index + 1}/${OPENROUTER_KEYS.length}`);
+        return { key, index };
     }
 
     async generateResponse(networkId, prompt, settings, sendMessageCallback) {
@@ -89,7 +92,7 @@ class NetworkManager {
         let currentMaxTokens = settings.custom_networks[networkId]?.max_tokens || settings.max_tokens;
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            const currentKey = this._getNextKey();
+            const { key: currentKey, index: keyIndex } = this._getNextKey();
             try {
                 const response = await axios.post(
                     OPENROUTER_API_URL,
@@ -108,11 +111,11 @@ class NetworkManager {
 
             } catch (error) {
                 const errorMessage = error.response?.data?.error?.message || error.message || "Неизвестная ошибка";
-                console.error(`Попытка ${attempt} с ключом #${this.currentKeyIndex} не удалась. Ошибка: ${errorMessage}`);
+                console.error(`Попытка ${attempt} с ключом #${keyIndex + 1} не удалась. Ошибка: ${errorMessage}`);
 
                 if (errorMessage.includes('Insufficient credits')) {
-                    console.log(`Ключ #${this.currentKeyIndex} исчерпан. Пробую следующий.`);
-                    if (sendMessageCallback) await sendMessageCallback(`_(Один из API ключей исчерпан, автоматически пробую следующий...)_`);
+                    console.log(`Ключ #${keyIndex + 1} исчерпан. Пробую следующий.`);
+                    if (sendMessageCallback) await sendMessageCallback(`_(Один из API ключей (№${keyIndex + 1}) исчерпан, автоматически пробую следующий...)_`);
                     continue; // Сразу переходим к следующей попытке с новым ключом
                 }
                 
@@ -121,10 +124,10 @@ class NetworkManager {
                     if (match && match[1]) {
                         const affordableTokens = parseInt(match[1], 10) - 20;
                         if (affordableTokens > 0) {
-                            console.log(`Снижаю лимит токенов до ${affordableTokens} и повторяю запрос с тем же ключом.`);
+                            console.log(`Снижаю лимит токенов до ${affordableTokens} и повторяю запрос с тем же ключом №${keyIndex + 1}.`);
                             currentMaxTokens = affordableTokens;
-                            // Откатываем индекс, чтобы повторить с этим же ключом
-                            this.currentKeyIndex = (this.currentKeyIndex - 1 + OPENROUTER_KEYS.length) % OPENROUTER_KEYS.length;
+                            // Откатываем индекс, чтобы повторить с этим же ключом в следующем вызове
+                            this.currentKeyIndex = keyIndex;
                             if (sendMessageCallback) await sendMessageCallback(`_(${network.name}: немного не хватает лимита, уменьшаю ответ...)_`);
                             continue;
                         }
@@ -142,6 +145,7 @@ class NetworkManager {
                     throw new Error(`Не удалось получить ответ от "${network.name}" после перебора всех ключей и ${MAX_RETRIES} попыток: ${errorMessage}`);
                 }
                 
+                // Небольшая пауза перед следующей попыткой
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
